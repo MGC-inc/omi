@@ -1,8 +1,10 @@
-# Delivered notes and delivery state hold real conversation content.
-# They must never reach a git remote.
+# Delivered notes, delivery state, and the local mirror all hold real
+# conversation content. They must never reach a git remote.
 out/
 state/
-*.md.tmp
+*.db
+*.db-wal
+*.db-shm
 .note-*
 .state-*
 

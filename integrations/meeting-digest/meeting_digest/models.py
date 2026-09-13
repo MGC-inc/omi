@@ -11,7 +11,7 @@ failing the whole run. A single odd conversation must not stop a batch.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -142,6 +142,99 @@ class MeetingRecord:
     def open_action_items(self) -> List[ActionItem]:
         return [item for item in self.action_items if not item.completed]
 
+    def to_dict(self, include_transcript: bool = True) -> Dict[str, Any]:
+        """A JSON-serializable projection — the shape the HTTP API returns."""
+        payload: Dict[str, Any] = {
+            "id": self.id,
+            "title": self.title,
+            "overview": self.overview,
+            "category": self.category,
+            "emoji": self.emoji,
+            "started_at": _iso(self.started_at),
+            "finished_at": _iso(self.finished_at),
+            "created_at": _iso(self.created_at),
+            "duration_minutes": self.duration_minutes,
+            "language": self.language,
+            "source": self.source,
+            "sections": [{"heading": s.heading, "body_markdown": s.body_markdown} for s in self.sections],
+            "action_items": [
+                {
+                    "description": item.description,
+                    "completed": item.completed,
+                    "due_at": _iso(item.due_at),
+                    "owner_name": item.owner_name,
+                    "context": item.context,
+                }
+                for item in self.action_items
+            ],
+            "events": [
+                {
+                    "title": event.title,
+                    "description": event.description,
+                    "start": _iso(event.start),
+                    "duration_minutes": event.duration_minutes,
+                }
+                for event in self.events
+            ],
+        }
+        if include_transcript:
+            payload["transcript"] = [
+                {
+                    "speaker": u.speaker,
+                    "text": u.text,
+                    "is_user": u.is_user,
+                    "start_seconds": u.start_seconds,
+                    "end_seconds": u.end_seconds,
+                }
+                for u in self.transcript
+            ]
+        return payload
+
+    @staticmethod
+    def from_stored(payload: Dict[str, Any]) -> "MeetingRecord":
+        """Rebuild a record from ``to_dict`` output.
+
+        The inverse of ``to_dict``, so the stored copy feeds the same daily
+        roll-up code as a freshly fetched one instead of a parallel aggregation.
+        """
+        return MeetingRecord(
+            id=_text(payload.get("id")),
+            title=_text(payload.get("title")) or "(untitled)",
+            overview=_text(payload.get("overview")),
+            category=_text(payload.get("category")) or "other",
+            emoji=_text(payload.get("emoji")) or "🧠",
+            started_at=parse_timestamp(payload.get("started_at")),
+            finished_at=parse_timestamp(payload.get("finished_at")),
+            created_at=parse_timestamp(payload.get("created_at")),
+            language=_optional_text(payload.get("language")),
+            source=_optional_text(payload.get("source")),
+            sections=[Section.from_api(s) for s in _items(payload.get("sections"))],
+            action_items=[ActionItem.from_api(a) for a in _items(payload.get("action_items"))],
+            events=[
+                Event(
+                    title=_text(e.get("title")),
+                    description=_text(e.get("description")),
+                    start=parse_timestamp(e.get("start")),
+                    duration_minutes=(
+                        e["duration_minutes"]
+                        if isinstance(e.get("duration_minutes"), int) and e["duration_minutes"] > 0
+                        else 30
+                    ),
+                )
+                for e in _items(payload.get("events"))
+            ],
+            transcript=[
+                Utterance(
+                    speaker=_text(t.get("speaker")) or "SPEAKER_00",
+                    text=_text(t.get("text")),
+                    is_user=bool(t.get("is_user", False)),
+                    start_seconds=_number(t.get("start_seconds")),
+                    end_seconds=_number(t.get("end_seconds")),
+                )
+                for t in _items(payload.get("transcript"))
+            ],
+        )
+
     @staticmethod
     def from_api(payload: Dict[str, Any]) -> "MeetingRecord":
         structured = payload.get("structured") or {}
@@ -161,6 +254,26 @@ class MeetingRecord:
             events=[Event.from_api(e) for e in _items(structured.get("events"))],
             transcript=[Utterance.from_api(t) for t in _items(payload.get("transcript_segments"))],
         )
+
+
+def to_local(value: Optional[datetime], utc_offset_hours: int) -> Optional[datetime]:
+    """Shift an aware UTC datetime into the configured local offset."""
+    if value is None:
+        return None
+    return value.astimezone(timezone(timedelta(hours=utc_offset_hours)))
+
+
+def format_local(
+    value: Optional[datetime], utc_offset_hours: int, fmt: str = "%Y-%m-%d %H:%M", empty: str = "-"
+) -> str:
+    """Render a timestamp in local time. Timestamps shown to people are local;
+    only machine-readable fields stay in UTC."""
+    local = to_local(value, utc_offset_hours)
+    return local.strftime(fmt) if local else empty
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
 
 
 def _items(value: Any) -> List[Dict[str, Any]]:

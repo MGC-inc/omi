@@ -1,0 +1,5 @@
+-r requirements.txt
+# Only needed for `python -m meeting_digest serve`. Ingest and daily do not
+# import these, so a machine that only runs the cron job can skip them.
+fastapi>=0.110
+uvicorn>=0.27

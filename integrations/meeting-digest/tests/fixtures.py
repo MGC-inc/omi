@@ -5,16 +5,22 @@ backend/models/structured.py as of the version this pipeline was written
 against. If an upstream rename breaks normalization, these are what fail.
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+
+DEFAULT_DURATION_MINUTES = 45
 
 
 def conversation_payload(
     conversation_id: str = "conv_001",
     started_at: str = "2026-09-10T01:00:00Z",
-    finished_at: str = "2026-09-10T01:45:00Z",
+    finished_at: Optional[str] = None,
     with_transcript: bool = True,
     title: str = "A社との商談",
 ) -> Dict[str, Any]:
+    # Derived so a caller that moves started_at gets a coherent duration.
+    finished_at = finished_at or _plus_minutes(started_at, DEFAULT_DURATION_MINUTES)
+
     payload: Dict[str, Any] = {
         "id": conversation_id,
         "created_at": started_at,
@@ -85,3 +91,8 @@ def list_item(conversation_id: str, started_at: str, title: Optional[str] = None
         title=title or "会話 {}".format(conversation_id),
     )
     return payload
+
+
+def _plus_minutes(timestamp: str, minutes: int) -> str:
+    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return (parsed + timedelta(minutes=minutes)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

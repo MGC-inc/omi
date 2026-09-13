@@ -32,8 +32,16 @@ class Config:
     categories: Optional[str] = None
     state_path: str = "state/processed.json"
     output_dir: str = "out"
+    store_path: str = "state/conversations.db"
     slack_webhook_url: Optional[str] = None
+    notion_token: Optional[str] = None
+    notion_database_id: Optional[str] = None
     include_transcript_in_markdown: bool = True
+    include_transcript_in_notion: bool = True
+    utc_offset_hours: int = 9
+    api_server_token: Optional[str] = None
+    api_server_host: str = "127.0.0.1"
+    api_server_port: int = 8787
     request_timeout_seconds: float = 30.0
     sinks: List[str] = field(default_factory=lambda: ["markdown"])
 
@@ -66,8 +74,16 @@ class Config:
             categories=(env.get("MD_CATEGORIES") or "").strip() or None,
             state_path=env.get("MD_STATE_PATH") or "state/processed.json",
             output_dir=env.get("MD_OUTPUT_DIR") or "out",
+            store_path=env.get("MD_STORE_PATH") or "state/conversations.db",
             slack_webhook_url=(env.get("MD_SLACK_WEBHOOK_URL") or "").strip() or None,
+            notion_token=(env.get("MD_NOTION_TOKEN") or "").strip() or None,
+            notion_database_id=_normalize_notion_id(env.get("MD_NOTION_DATABASE_ID")),
             include_transcript_in_markdown=_flag(env, "MD_MARKDOWN_INCLUDE_TRANSCRIPT", True),
+            include_transcript_in_notion=_flag(env, "MD_NOTION_INCLUDE_TRANSCRIPT", True),
+            utc_offset_hours=_offset_int(env, "MD_UTC_OFFSET_HOURS", 9),
+            api_server_token=(env.get("MD_API_TOKEN") or "").strip() or None,
+            api_server_host=(env.get("MD_API_HOST") or "127.0.0.1").strip(),
+            api_server_port=_bounded_int(env, "MD_API_PORT", 8787, 1, 65535),
             request_timeout_seconds=float(env.get("MD_REQUEST_TIMEOUT_SECONDS") or 30.0),
             sinks=sinks,
         )
@@ -82,9 +98,33 @@ class Config:
             "categories": self.categories,
             "state_path": self.state_path,
             "output_dir": self.output_dir,
+            "store_path": self.store_path,
             "slack_webhook_configured": self.slack_webhook_url is not None,
+            "notion_token_configured": self.notion_token is not None,
+            "notion_database_id": self.notion_database_id,
+            "utc_offset_hours": self.utc_offset_hours,
+            "api_token_configured": self.api_server_token is not None,
+            "api_bind": "{}:{}".format(self.api_server_host, self.api_server_port),
             "sinks": list(self.sinks),
         }
+
+
+def _normalize_notion_id(value) -> Optional[str]:
+    """Accept a raw 32-hex id, a dashed UUID, or a pasted Notion database URL."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    if "notion.so" in text or text.startswith("http"):
+        # .../<workspace>/<database-id>?v=<view-id> — the path segment is the id.
+        tail = text.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+        text = tail.rsplit("-", 1)[-1] if len(tail.rsplit("-", 1)[-1]) == 32 else tail
+    compact = text.replace("-", "")
+    if len(compact) != 32 or not all(c in "0123456789abcdefABCDEF" for c in compact):
+        raise ConfigError(
+            "MD_NOTION_DATABASE_ID does not look like a Notion database id "
+            "(expected 32 hex characters, with or without dashes). Got {!r}".format(value)
+        )
+    return compact
 
 
 def _redact_key(api_key: str) -> str:
@@ -92,6 +132,20 @@ def _redact_key(api_key: str) -> str:
     if not api_key.startswith(prefix) or len(api_key) <= len(prefix) + 4:
         return "***"
     return prefix + api_key[len(prefix) : len(prefix) + 4] + "..."
+
+
+def _offset_int(env, name: str, default: int) -> int:
+    """A UTC offset in whole hours, used to decide which local day a conversation belongs to."""
+    raw = env.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError("{} must be an integer number of hours, got {!r}".format(name, raw))
+    if not -12 <= value <= 14:
+        raise ConfigError("{} must be between -12 and 14, got {}".format(name, value))
+    return value
 
 
 def _positive_int(env, name: str, default: int) -> int:

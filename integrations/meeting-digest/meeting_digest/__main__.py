@@ -1,4 +1,9 @@
-"""Command-line entry point: ``python -m meeting_digest``.
+"""Command-line entry point: ``python -m meeting_digest [command]``.
+
+Commands:
+  ingest   fetch new conversations and deliver them (the default)
+  daily    build and deliver one day's review
+  serve    run the read-only HTTP API over the local store
 
 Exit codes:
   0  the run finished; everything it attempted was delivered (a run that hit the
@@ -16,12 +21,16 @@ from typing import List, Optional, Sequence
 from . import __version__
 from .client import OmiApiError, OmiClient
 from .config import Config, ConfigError
-from .pipeline import run
+from .daily import resolve_day
+from .pipeline import run, run_daily
 from .sinks import build_sinks
 from .sinks.base import Sink
 from .state import DeliveryState, StateError
 
 logger = logging.getLogger("meeting_digest")
+
+COMMANDS = ("ingest", "daily", "serve")
+TOP_LEVEL_FLAGS = ("-h", "--help", "--version")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -38,10 +47,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(config.redacted(), ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "serve":
+        # The API reads the local store; it needs no sinks and no Omi call.
+        from .server import ServerConfigError, serve
+
+        try:
+            return serve(config)
+        except ServerConfigError as exc:
+            print("server configuration error: {}".format(exc), file=sys.stderr)
+            return 2
+
+    try:
+        sinks = build_sinks(config)
+    except ConfigError as exc:
+        print("startup error: {}".format(exc), file=sys.stderr)
+        return 2
+
+    try:
+        if args.command == "daily":
+            return _run_daily(config, sinks, args)
+        return _run_ingest(config, sinks, args)
+    finally:
+        _close_all(sinks)
+
+
+def _run_ingest(config: Config, sinks: List[Sink], args) -> int:
     try:
         state = DeliveryState.load(config.state_path)
-        sinks = build_sinks(config)
-    except (ConfigError, StateError) as exc:
+    except StateError as exc:
         print("startup error: {}".format(exc), file=sys.stderr)
         return 2
 
@@ -51,27 +84,55 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except OmiApiError as exc:
         print("api error: {}".format(exc), file=sys.stderr)
         return 1
-    finally:
-        _close_all(sinks)
 
     if args.json:
         print(json.dumps(summary.as_dict(), ensure_ascii=False, indent=2))
     else:
-        _print_summary(summary)
+        print(
+            "listed={} already_delivered={} fetched={} delivered={} deferred={}".format(
+                summary.listed,
+                summary.already_delivered,
+                summary.fetched,
+                summary.delivered,
+                summary.deferred,
+            )
+        )
+        if summary.rate_limited:
+            print("rate limited — the remainder is queued for the next run")
 
+    for failure in summary.failures:
+        print("FAILED: {}".format(failure), file=sys.stderr)
     return 0 if not summary.failures else 1
 
 
-def _print_summary(summary) -> None:
-    print(
-        "listed={} already_delivered={} fetched={} delivered={} deferred={}".format(
-            summary.listed, summary.already_delivered, summary.fetched, summary.delivered, summary.deferred
+def _run_daily(config: Config, sinks: List[Sink], args) -> int:
+    try:
+        day = resolve_day(args.day, config.utc_offset_hours)
+    except ValueError as exc:
+        print("argument error: {}".format(exc), file=sys.stderr)
+        return 2
+
+    try:
+        with OmiClient(config) as client:
+            summary = run_daily(config, client, sinks, day)
+    except OmiApiError as exc:
+        print("api error: {}".format(exc), file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(summary.as_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(
+            "day={} listed={} in_day={} delivered_to={}".format(
+                summary.day, summary.listed, summary.in_day, ",".join(summary.delivered_to) or "-"
+            )
         )
-    )
-    if summary.rate_limited:
-        print("rate limited — the remainder is queued for the next run")
+        if summary.skipped_sinks:
+            print("sinks without a daily view: {}".format(", ".join(summary.skipped_sinks)))
+
     for failure in summary.failures:
         print("FAILED: {}".format(failure), file=sys.stderr)
+    return 0 if not summary.failures else 1
 
 
 def _close_all(sinks: List[Sink]) -> None:
@@ -83,19 +144,43 @@ def _close_all(sinks: List[Sink]) -> None:
 
 
 def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # `python -m meeting_digest --json` keeps working: a leading flag that is not
+    # a top-level one belongs to the default command.
+    if not raw or (raw[0].startswith("-") and raw[0] not in TOP_LEVEL_FLAGS):
+        raw = ["ingest"] + raw
+
     parser = argparse.ArgumentParser(
         prog="meeting_digest",
-        description="Pull new Omi conversations and deliver them to the configured sinks.",
-    )
-    parser.add_argument("--json", action="store_true", help="Print the run summary as JSON.")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging.")
-    parser.add_argument(
-        "--show-config",
-        action="store_true",
-        help="Print the resolved configuration (the API key is redacted) and exit.",
+        description="Pull Omi conversations and deliver them to the configured sinks.",
     )
     parser.add_argument("--version", action="version", version="meeting_digest {}".format(__version__))
-    return parser.parse_args(argv)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    for name, help_text in (
+        ("ingest", "Fetch new conversations and deliver each one."),
+        ("daily", "Build and deliver one day's review."),
+        ("serve", "Run the read-only HTTP API over the local store."),
+    ):
+        sub = subparsers.add_parser(name, help=help_text)
+        sub.add_argument("--json", action="store_true", help="Print the run summary as JSON.")
+        sub.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging.")
+        sub.add_argument(
+            "--show-config",
+            action="store_true",
+            help="Print the resolved configuration (the API key is redacted) and exit.",
+        )
+        if name == "daily":
+            sub.add_argument(
+                "--day",
+                default="yesterday",
+                help="Which day to review: an ISO date (YYYY-MM-DD), 'today', or 'yesterday' (default).",
+            )
+
+    args = parser.parse_args(raw)
+    if not hasattr(args, "day"):
+        args.day = None
+    return args
 
 
 def _configure_logging(verbose: bool, json_output: bool) -> None:
