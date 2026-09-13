@@ -93,9 +93,10 @@ def _run_ingest(config: Config, sinks: List[Sink], args) -> int:
         print(json.dumps(summary.as_dict(), ensure_ascii=False, indent=2))
     else:
         print(
-            "listed={} already_delivered={} fetched={} delivered={} deferred={}".format(
+            "listed={} already_delivered={} skipped_short={} fetched={} delivered={} deferred={}".format(
                 summary.listed,
                 summary.already_delivered,
+                summary.skipped_short,
                 summary.fetched,
                 summary.delivered,
                 summary.deferred,

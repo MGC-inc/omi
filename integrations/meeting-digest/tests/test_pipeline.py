@@ -208,3 +208,50 @@ def test_unexpected_sink_exception_does_not_take_down_the_run(tmp_path):
 
     assert good.delivered == ["conv_0"]
     assert len(summary.failures) == 1
+
+
+def test_short_conversations_are_skipped_when_a_minimum_is_set(tmp_path):
+    # Omi records everything, including one-minute fragments and stray audio.
+    # A Notion database fills with noise without this filter.
+    config = _config(tmp_path, min_duration_minutes=5)
+    items = [
+        _timed_item("short", "2026-09-13T01:00:00Z", "2026-09-13T01:01:00Z"),
+        _timed_item("long", "2026-09-13T02:00:00Z", "2026-09-13T02:30:00Z"),
+    ]
+    client = FakeClient(items)
+    sink = RecordingSink("markdown")
+
+    summary = run(config, client, [sink], DeliveryState.load(config.state_path))
+
+    assert sink.delivered == ["long"]
+    assert summary.skipped_short == 1
+    # The skipped one never cost a transcript read.
+    assert client.fetched_ids == ["long"]
+
+
+def test_a_conversation_of_unknown_length_is_kept(tmp_path):
+    # Dropping what we cannot measure would lose it silently.
+    config = _config(tmp_path, min_duration_minutes=5)
+    item = _timed_item("unknown", "2026-09-13T01:00:00Z", None)
+    sink = RecordingSink("markdown")
+
+    run(config, FakeClient([item]), [sink], DeliveryState.load(config.state_path))
+
+    assert sink.delivered == ["unknown"]
+
+
+def test_no_minimum_means_nothing_is_skipped(tmp_path):
+    config = _config(tmp_path)
+    item = _timed_item("short", "2026-09-13T01:00:00Z", "2026-09-13T01:00:30Z")
+    sink = RecordingSink("markdown")
+
+    summary = run(config, FakeClient([item]), [sink], DeliveryState.load(config.state_path))
+
+    assert sink.delivered == ["short"]
+    assert summary.skipped_short == 0
+
+
+def _timed_item(conversation_id: str, started_at: str, finished_at):
+    item = list_item(conversation_id, started_at)
+    item["finished_at"] = finished_at
+    return item

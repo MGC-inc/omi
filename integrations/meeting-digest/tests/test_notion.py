@@ -152,7 +152,7 @@ def test_blocks_beyond_the_first_hundred_are_appended():
     ]
     stub = NotionStub(MINIMAL_SCHEMA)
 
-    _sink(stub).deliver(MeetingRecord.from_api(payload))
+    _sink(stub, include_transcript=True).deliver(MeetingRecord.from_api(payload))
 
     created = stub.calls("POST", "/pages")[0]
     appended = stub.calls("PATCH", "/children")
@@ -234,3 +234,66 @@ def test_notion_due_date_uses_local_time():
     todos = [b for b in blocks if b["type"] == "to_do"]
 
     assert "期限: 2026-09-15" in todos[0]["to_do"]["rich_text"][0]["text"]["content"]
+
+
+# --- Japanese (or any renamed) columns ---------------------------------------
+
+JAPANESE_SCHEMA = {
+    "タイトル": {"type": "title", "title": {}},
+    "日付": {"type": "date", "date": {}},
+    "カテゴリ": {"type": "select", "select": {}},
+    "長さ（分）": {"type": "number", "number": {}},
+    "未完了アクション": {"type": "number", "number": {}},
+    "Omi ID": {"type": "rich_text", "rich_text": {}},
+}
+
+JAPANESE_NAMES = {
+    "Date": "日付",
+    "Category": "カテゴリ",
+    "Duration (min)": "長さ（分）",
+    "Open Actions": "未完了アクション",
+    "Omi ID": "Omi ID",
+}
+
+
+def test_property_names_can_be_mapped_to_the_databases_own_columns():
+    # A Japanese workspace does not name its columns "Duration (min)".
+    stub = NotionStub(JAPANESE_SCHEMA)
+    _sink(stub, property_names=JAPANESE_NAMES).deliver(_record())
+
+    properties = stub.calls("POST", "/pages")[0]["properties"]
+
+    assert properties["タイトル"]["title"][0]["text"]["content"] == "A社との商談"
+    assert properties["カテゴリ"]["select"]["name"] == "business"
+    assert properties["長さ（分）"]["number"] == 45
+    assert properties["未完了アクション"]["number"] == 1
+    assert properties["日付"]["date"]["start"].startswith("2026-09-10T01:00")
+
+
+def test_the_duplicate_query_uses_the_mapped_omi_id_column():
+    stub = NotionStub(JAPANESE_SCHEMA, existing_ids=["conv_001"])
+    names = dict(JAPANESE_NAMES)
+    names["Omi ID"] = "Omi ID"
+
+    _sink(stub, property_names=names).deliver(_record())
+
+    assert stub.calls("POST", "/pages") == []
+
+
+def test_an_unmapped_column_absent_from_the_database_is_skipped():
+    schema = {k: v for k, v in JAPANESE_SCHEMA.items() if k != "カテゴリ"}
+    stub = NotionStub(schema)
+
+    _sink(stub, property_names=JAPANESE_NAMES).deliver(_record())
+
+    assert "カテゴリ" not in stub.calls("POST", "/pages")[0]["properties"]
+
+
+def test_transcript_is_excluded_from_notion_by_default():
+    # Omi's raw transcript carries recognition noise; the summary is the part
+    # worth putting in a shared workspace.
+    stub = NotionStub(MINIMAL_SCHEMA)
+    NotionSink("ntn_test", DATABASE_ID, client=httpx.Client(transport=httpx.MockTransport(stub))).deliver(_record())
+
+    body = json.dumps(stub.calls("POST", "/pages")[0], ensure_ascii=False)
+    assert "本日はお時間をいただきありがとうございます。" not in body

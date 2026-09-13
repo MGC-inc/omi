@@ -102,8 +102,10 @@ class Config:
     slack_webhook_url: Optional[str] = None
     notion_token: Optional[str] = None
     notion_database_id: Optional[str] = None
+    notion_property_names: Dict[str, str] = field(default_factory=dict)
     include_transcript_in_markdown: bool = True
-    include_transcript_in_notion: bool = True
+    include_transcript_in_notion: bool = False
+    min_duration_minutes: int = 0
     utc_offset_hours: int = 9
     api_server_token: Optional[str] = None
     api_server_host: str = "127.0.0.1"
@@ -145,7 +147,9 @@ class Config:
             notion_token=(env.get("MD_NOTION_TOKEN") or "").strip() or None,
             notion_database_id=_normalize_notion_id(env.get("MD_NOTION_DATABASE_ID")),
             include_transcript_in_markdown=_flag(env, "MD_MARKDOWN_INCLUDE_TRANSCRIPT", True),
-            include_transcript_in_notion=_flag(env, "MD_NOTION_INCLUDE_TRANSCRIPT", True),
+            notion_property_names=_notion_property_names(env),
+            include_transcript_in_notion=_flag(env, "MD_NOTION_INCLUDE_TRANSCRIPT", False),
+            min_duration_minutes=_non_negative_int(env, "MD_MIN_DURATION_MINUTES", 0),
             utc_offset_hours=_offset_int(env, "MD_UTC_OFFSET_HOURS", 9),
             api_server_token=(env.get("MD_API_TOKEN") or "").strip() or None,
             api_server_host=(env.get("MD_API_HOST") or "127.0.0.1").strip(),
@@ -168,6 +172,8 @@ class Config:
             "slack_webhook_configured": self.slack_webhook_url is not None,
             "notion_token_configured": self.notion_token is not None,
             "notion_database_id": self.notion_database_id,
+            "notion_property_names": dict(self.notion_property_names),
+            "min_duration_minutes": self.min_duration_minutes,
             "utc_offset_hours": self.utc_offset_hours,
             "api_token_configured": self.api_server_token is not None,
             "api_bind": "{}:{}".format(self.api_server_host, self.api_server_port),
@@ -198,6 +204,41 @@ def _redact_key(api_key: str) -> str:
     if not api_key.startswith(prefix) or len(api_key) <= len(prefix) + 4:
         return "***"
     return prefix + api_key[len(prefix) : len(prefix) + 4] + "..."
+
+
+#: Canonical property key -> the environment variable that renames it. The
+#: canonical keys are what the Notion sink asks for; the database decides what
+#: they are actually called, which for a Japanese workspace is rarely English.
+NOTION_PROPERTY_ENV = {
+    "Date": "MD_NOTION_PROP_DATE",
+    "Category": "MD_NOTION_PROP_CATEGORY",
+    "Duration (min)": "MD_NOTION_PROP_DURATION",
+    "Open Actions": "MD_NOTION_PROP_OPEN_ACTIONS",
+    "Language": "MD_NOTION_PROP_LANGUAGE",
+    "Omi ID": "MD_NOTION_PROP_OMI_ID",
+}
+
+
+def _notion_property_names(env) -> Dict[str, str]:
+    """Resolve each canonical property to the column name in this database."""
+    resolved = {}
+    for canonical, variable in NOTION_PROPERTY_ENV.items():
+        configured = (env.get(variable) or "").strip()
+        resolved[canonical] = configured or canonical
+    return resolved
+
+
+def _non_negative_int(env, name: str, default: int) -> int:
+    raw = env.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError("{} must be an integer, got {!r}".format(name, raw))
+    if value < 0:
+        raise ConfigError("{} must be >= 0, got {}".format(name, value))
+    return value
 
 
 def _offset_int(env, name: str, default: int) -> int:

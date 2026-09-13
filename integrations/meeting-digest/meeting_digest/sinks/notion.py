@@ -17,6 +17,10 @@ queries for a page already holding this conversation's ID and skips if one
 exists. Without that property the local delivery state is the only guard, which
 is enough for ordinary runs but can duplicate a page if a run dies between
 creating the page and saving state.
+
+Column names are configurable (``property_names``). The canonical keys below are
+what this module asks for; a real database decides what they are called, and in
+a Japanese workspace that is rarely the English default.
 """
 
 from typing import Any, Dict, List, Optional
@@ -31,7 +35,14 @@ NOTION_VERSION = "2022-06-28"
 
 MAX_BLOCKS_PER_REQUEST = 100
 MAX_RICH_TEXT_CHARS = 2000
+
+# Canonical property keys. property_names maps each to the database's own column.
 OMI_ID_PROPERTY = "Omi ID"
+DATE_PROPERTY = "Date"
+CATEGORY_PROPERTY = "Category"
+DURATION_PROPERTY = "Duration (min)"
+OPEN_ACTIONS_PROPERTY = "Open Actions"
+LANGUAGE_PROPERTY = "Language"
 
 
 class NotionSink(Sink):
@@ -42,10 +53,13 @@ class NotionSink(Sink):
         self,
         token: str,
         database_id: str,
-        include_transcript: bool = True,
+        # Default off: Omi's raw transcript carries recognition noise, and the
+        # summary is the part worth putting in a shared workspace.
+        include_transcript: bool = False,
         timeout_seconds: float = 30.0,
         client: Optional[httpx.Client] = None,
         utc_offset_hours: int = 9,
+        property_names: Optional[Dict[str, str]] = None,
     ):
         if not token:
             raise ValueError("NotionSink requires an integration token")
@@ -54,6 +68,7 @@ class NotionSink(Sink):
         self._database_id = database_id
         self._include_transcript = include_transcript
         self._utc_offset_hours = utc_offset_hours
+        self._property_names = dict(property_names or {})
         self._schema: Optional[Dict[str, Any]] = None
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
@@ -63,10 +78,14 @@ class NotionSink(Sink):
             "Content-Type": "application/json",
         }
 
+    @property
+    def _omi_id_column(self) -> str:
+        return self._property_names.get(OMI_ID_PROPERTY, OMI_ID_PROPERTY)
+
     def deliver(self, record: MeetingRecord) -> None:
         schema = self._database_schema()
 
-        if OMI_ID_PROPERTY in schema and self._already_present(record.id):
+        if self._omi_id_column in schema and self._already_present(record.id):
             return
 
         blocks = build_blocks(
@@ -89,7 +108,7 @@ class NotionSink(Sink):
         schema = self._database_schema()
         synthetic_id = daily_record_id(summary)
 
-        if OMI_ID_PROPERTY in schema:
+        if self._omi_id_column in schema:
             for page_id in self._find_pages(synthetic_id):
                 self._archive_page(page_id)
 
@@ -109,7 +128,7 @@ class NotionSink(Sink):
     ) -> str:
         body: Dict[str, Any] = {
             "parent": {"database_id": self._database_id},
-            "properties": build_daily_properties(summary, schema, synthetic_id),
+            "properties": build_daily_properties(summary, schema, synthetic_id, self._property_names),
             "children": blocks,
             "icon": {"type": "emoji", "emoji": "🗓️"},
         }
@@ -124,7 +143,7 @@ class NotionSink(Sink):
             "POST",
             "/databases/{}/query".format(self._database_id),
             json={
-                "filter": {"property": OMI_ID_PROPERTY, "rich_text": {"equals": conversation_id}},
+                "filter": {"property": self._omi_id_column, "rich_text": {"equals": conversation_id}},
                 "page_size": 25,
             },
         )
@@ -162,7 +181,7 @@ class NotionSink(Sink):
     def _create_page(self, record: MeetingRecord, schema: Dict[str, Any], blocks: List[Dict[str, Any]]) -> str:
         body: Dict[str, Any] = {
             "parent": {"database_id": self._database_id},
-            "properties": build_properties(record, schema),
+            "properties": build_properties(record, schema, self._property_names),
             "children": blocks,
         }
         if record.emoji:
@@ -202,7 +221,9 @@ class NotionSink(Sink):
 # --- payload construction ---------------------------------------------------
 
 
-def build_properties(record: MeetingRecord, schema: Dict[str, Any]) -> Dict[str, Any]:
+def build_properties(
+    record: MeetingRecord, schema: Dict[str, Any], property_names: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
     """Write the title, plus whichever optional properties the database has.
 
     A database missing every optional column still receives a usable page.
@@ -214,27 +235,36 @@ def build_properties(record: MeetingRecord, schema: Dict[str, Any]) -> Dict[str,
         properties[title_name] = {"title": [{"text": {"content": _clip(record.title)}}]}
 
     optional = {
-        "Date": lambda: _date_property(record),
-        "Category": lambda: {"select": {"name": record.category}} if record.category else None,
-        "Duration (min)": lambda: {"number": record.duration_minutes},
-        "Open Actions": lambda: {"number": len(record.open_action_items)},
-        "Language": lambda: {"select": {"name": record.language}} if record.language else None,
+        DATE_PROPERTY: lambda: _date_property(record),
+        CATEGORY_PROPERTY: lambda: {"select": {"name": record.category}} if record.category else None,
+        DURATION_PROPERTY: lambda: {"number": record.duration_minutes},
+        OPEN_ACTIONS_PROPERTY: lambda: {"number": len(record.open_action_items)},
+        LANGUAGE_PROPERTY: lambda: {"select": {"name": record.language}} if record.language else None,
         OMI_ID_PROPERTY: lambda: {"rich_text": [{"text": {"content": record.id}}]} if record.id else None,
     }
+    _apply_optional(properties, schema, optional, property_names)
+    return properties
 
-    for name, builder in optional.items():
-        declared = schema.get(name)
+
+def _apply_optional(
+    properties: Dict[str, Any],
+    schema: Dict[str, Any],
+    optional: Dict[str, Any],
+    property_names: Optional[Dict[str, str]],
+) -> None:
+    names = property_names or {}
+    for canonical, builder in optional.items():
+        column = names.get(canonical, canonical)
+        declared = schema.get(column)
         if not isinstance(declared, dict):
             continue
         value = builder()
         if value is None:
             continue
-        # Skip a column whose type was changed to something we do not write.
+        # Skip a column whose type is not the one we write into it.
         if declared.get("type") not in value:
             continue
-        properties[name] = value
-
-    return properties
+        properties[column] = value
 
 
 def build_blocks(
@@ -381,7 +411,9 @@ def daily_record_id(summary) -> str:
     return DAILY_ID_PREFIX + summary.label
 
 
-def build_daily_properties(summary, schema: Dict[str, Any], synthetic_id: str) -> Dict[str, Any]:
+def build_daily_properties(
+    summary, schema: Dict[str, Any], synthetic_id: str, property_names: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
     properties: Dict[str, Any] = {}
 
     title_name = _title_property_name(schema)
@@ -389,22 +421,13 @@ def build_daily_properties(summary, schema: Dict[str, Any], synthetic_id: str) -
         properties[title_name] = {"title": [{"text": {"content": "🗓️ {} の振り返り".format(summary.label)}}]}
 
     optional = {
-        "Date": lambda: {"date": {"start": summary.label}},
-        "Category": lambda: {"select": {"name": "daily-review"}},
-        "Duration (min)": lambda: {"number": summary.total_minutes},
-        "Open Actions": lambda: {"number": len(summary.open_actions)},
+        DATE_PROPERTY: lambda: {"date": {"start": summary.label}},
+        CATEGORY_PROPERTY: lambda: {"select": {"name": "daily-review"}},
+        DURATION_PROPERTY: lambda: {"number": summary.total_minutes},
+        OPEN_ACTIONS_PROPERTY: lambda: {"number": len(summary.open_actions)},
         OMI_ID_PROPERTY: lambda: {"rich_text": [{"text": {"content": synthetic_id}}]},
     }
-
-    for name, builder in optional.items():
-        declared = schema.get(name)
-        if not isinstance(declared, dict):
-            continue
-        value = builder()
-        if declared.get("type") not in value:
-            continue
-        properties[name] = value
-
+    _apply_optional(properties, schema, optional, property_names)
     return properties
 
 

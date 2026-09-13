@@ -50,6 +50,7 @@ def build_sinks(config: Config) -> List[Sink]:
                     include_transcript=config.include_transcript_in_notion,
                     timeout_seconds=config.request_timeout_seconds,
                     utc_offset_hours=config.utc_offset_hours,
+                    property_names=config.notion_property_names,
                 )
             )
         elif name == "store":

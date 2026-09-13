@@ -39,6 +39,7 @@ class RunSummary:
     fetched: int = 0
     delivered: int = 0
     deferred: int = 0
+    skipped_short: int = 0
     failures: List[str] = field(default_factory=list)
     rate_limited: bool = False
 
@@ -53,6 +54,7 @@ class RunSummary:
             "fetched": self.fetched,
             "delivered": self.delivered,
             "deferred": self.deferred,
+            "skipped_short": self.skipped_short,
             "failures": list(self.failures),
             "rate_limited": self.rate_limited,
         }
@@ -75,7 +77,7 @@ def run(
 
     try:
         candidates = _list_window(config, client, start_date, current_time, summary)
-        pending = _select_pending(candidates, sink_names, state, summary)
+        pending = _select_pending(candidates, sink_names, state, summary, config.min_duration_minutes)
         _deliver_all(config, client, sinks, state, pending, summary)
     finally:
         state.save()
@@ -102,19 +104,35 @@ def _select_pending(
     sink_names: Sequence[str],
     state: DeliveryState,
     summary: RunSummary,
+    min_duration_minutes: int = 0,
 ) -> List[Dict[str, Any]]:
     pending = []
     for item in candidates:
         conversation_id = item.get("id")
         if not isinstance(conversation_id, str) or not conversation_id:
             continue
-        if state.pending_sinks(conversation_id, sink_names):
-            pending.append(item)
-        else:
+        if not state.pending_sinks(conversation_id, sink_names):
             summary.already_delivered += 1
+            continue
+        # Filtered before the transcript fetch, so a skipped conversation costs
+        # nothing against the 25/hour transcript budget.
+        if min_duration_minutes and _duration_minutes(item) < min_duration_minutes:
+            summary.skipped_short += 1
+            continue
+        pending.append(item)
 
     pending.sort(key=_sort_key)
     return pending
+
+
+def _duration_minutes(item: Dict[str, Any]) -> float:
+    """Length from the list payload. An unknown length counts as long enough:
+    dropping a conversation we cannot measure would lose it silently."""
+    started = parse_timestamp(item.get("started_at"))
+    finished = parse_timestamp(item.get("finished_at"))
+    if not started or not finished or finished <= started:
+        return float("inf")
+    return (finished - started).total_seconds() / 60.0
 
 
 def _sort_key(item: Dict[str, Any]) -> datetime:

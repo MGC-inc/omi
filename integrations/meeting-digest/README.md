@@ -110,6 +110,7 @@ OMI_API_KEY="$(security find-generic-password -a "$USER" -s omi-api-key -w)" pyt
 | `MD_MAX_TRANSCRIPT_FETCHES` | `20` | 1回の実行で文字起こしを取得する上限 |
 | `MD_LIST_PAGE_SIZE` | `50` | 一覧取得のページサイズ（1〜100） |
 | `MD_CATEGORIES` | なし | カテゴリ絞り込み（カンマ区切り） |
+| `MD_MIN_DURATION_MINUTES` | `0` | この分数未満の会話を除外。文字起こし取得の前に弾きます |
 | `MD_UTC_OFFSET_HOURS` | `9` | 「その日」の区切りと表示時刻の基準。日本なら 9 |
 | `MD_STATE_PATH` | `state/processed.json` | 配信済み管理ファイル |
 | `MD_REQUEST_TIMEOUT_SECONDS` | `30` | HTTP タイムアウト |
@@ -122,7 +123,8 @@ OMI_API_KEY="$(security find-generic-password -a "$USER" -s omi-api-key -w)" pyt
 | `MD_MARKDOWN_INCLUDE_TRANSCRIPT` | Markdown に文字起こし全文を含めるか（既定 `true`） |
 | `MD_NOTION_TOKEN` | Notion インテグレーショントークン |
 | `MD_NOTION_DATABASE_ID` | 保存先データベース ID。Notion の URL をそのまま貼っても解釈します |
-| `MD_NOTION_INCLUDE_TRANSCRIPT` | Notion ページに文字起こしを含めるか（既定 `true`） |
+| `MD_NOTION_INCLUDE_TRANSCRIPT` | Notion ページに文字起こしを含めるか（既定 `false`） |
+| `MD_NOTION_PROP_DATE` 他 | 列名が英語の既定と違う場合の対応付け（下記） |
 | `MD_SLACK_WEBHOOK_URL` | Slack Incoming Webhook の URL |
 | `MD_STORE_PATH` | SQLite の保存先（既定 `state/conversations.db`） |
 
@@ -178,12 +180,37 @@ Notion で新しいデータベースを作り、インテグレーションに�
 `Omi ID` を用意すると、**同じ会話のページが二重に作られなくなります**。日次の振り返りも
 同じ列を使って前回分を差し替えるため、追加を推奨します。
 
+### 列名が日本語の場合
+
+英語の既定名（`Date` など）と違う列名を使っている場合は、対応付けを指定します。
+**存在しない列は自動的に飛ばされる**ので、実際にある列だけ設定してください。
+
+```ini
+MD_NOTION_PROP_DATE=日付
+MD_NOTION_PROP_CATEGORY=カテゴリ
+MD_NOTION_PROP_DURATION=長さ（分）
+MD_NOTION_PROP_OPEN_ACTIONS=未完了アクション
+MD_NOTION_PROP_OMI_ID=Omi ID
+```
+
+### 文字起こしは既定で入れません
+
+Omi の文字起こしは自動認識のため、無音部分の誤認識やノイズを含みます。
+Notion のような共有される場所には**要約だけ**を入れる既定にしています。
+全文はローカルの Markdown ノートに常に残ります。
+入れたい場合は `MD_NOTION_INCLUDE_TRANSCRIPT=true` にしてください。
+
 ### 実行
 
+```ini
+# .env
+MD_SINKS=markdown,notion
+MD_NOTION_TOKEN=ntn_...
+MD_NOTION_DATABASE_ID=https://www.notion.so/xxxx/1234...?v=...
+MD_MIN_DURATION_MINUTES=5
+```
+
 ```bash
-export MD_SINKS="markdown,notion"
-export MD_NOTION_TOKEN="ntn_..."
-export MD_NOTION_DATABASE_ID="https://www.notion.so/xxxx/1234...?v=..."   # URL のままで可
 python -m meeting_digest
 ```
 
@@ -278,12 +305,32 @@ OpenAPI ドキュメントは `http://127.0.0.1:8787/docs` で見られます。
 
 ## 定期実行
 
-```cron
-# 15分ごとに取り込み
-*/15 * * * * cd /opt/meeting-digest && . .venv/bin/activate && python -m meeting_digest --json >> log/ingest.log 2>&1
+### macOS（推奨: launchd）
 
-# 毎朝7時に前日の振り返り
-0 7 * * * cd /opt/meeting-digest && . .venv/bin/activate && python -m meeting_digest daily --json >> log/daily.log 2>&1
+同梱のスクリプトが登録まで行います。
+
+```bash
+cd ~/Downloads/meeting-digest
+./scripts/install-launchd.sh
+```
+
+- **取り込み**: 1時間ごと
+- **振り返り**: 毎朝 8:00（前日分）
+
+cron ではなく launchd を使っているのは、**スリープを跨いでも動くから**です。
+Mac が閉じている間に来た実行は、復帰後に1回だけ発火します。cron は黙って飛ばします。
+
+```bash
+launchctl list | grep omi-digest      # 動作確認
+tail -f log/com.mgc.omi-digest.ingest.log   # ログ
+./scripts/install-launchd.sh --uninstall    # 解除
+```
+
+### Linux / サーバー（cron）
+
+```cron
+*/60 * * * * cd /opt/meeting-digest && ./.venv/bin/python -m meeting_digest ingest --json >> log/ingest.log 2>&1
+0 8 * * *    cd /opt/meeting-digest && ./.venv/bin/python -m meeting_digest daily --json >> log/daily.log 2>&1
 ```
 
 cron はログインシェルの環境変数を引き継ぎません。上の例が動くのは、`cd` した先の
