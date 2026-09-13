@@ -64,6 +64,13 @@ def render_markdown(record: MeetingRecord, include_transcript: bool = True, utc_
     lines.extend(_metadata_block(record, utc_offset_hours))
     lines.append("")
 
+    if record.ideas:
+        # First, because this is what the conversation was kept for.
+        lines.append("## 拾ったアイデア・気づき")
+        lines.append("")
+        lines.extend("- {}".format(idea) for idea in record.ideas)
+        lines.append("")
+
     if record.overview:
         lines.append("## 概要")
         lines.append("")
@@ -119,6 +126,7 @@ def _metadata_block(record: MeetingRecord, utc_offset_hours: int) -> List[str]:
     label = "UTC{:+d}".format(utc_offset_hours)
     rows = [
         ("ID", record.id or "-"),
+        ("記録理由", ("発話トリガー" if record.clipped else record.curation_reason) or "-"),
         ("開始", _format_time(record.started_at, utc_offset_hours, label)),
         ("終了", _format_time(record.finished_at, utc_offset_hours, label)),
         ("長さ", "{}分".format(record.duration_minutes) if record.duration_minutes else "-"),

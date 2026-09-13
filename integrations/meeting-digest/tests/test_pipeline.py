@@ -280,3 +280,115 @@ def test_a_fatal_refinement_failure_stops_refining_but_not_delivering(tmp_path):
     assert len(sink.delivered) == 3  # every conversation still delivered
     assert summary.refined == 0
     assert len(summary.failures) == 1
+
+
+# --- curation ---------------------------------------------------------------
+
+
+class FakeCurator:
+    """Stands in for curate.Curator: judges by a lookup, records every call."""
+
+    def __init__(self, verdicts=None, error=None):
+        from meeting_digest.curate import Curation
+
+        self._verdicts = verdicts or {}
+        self._error = error
+        self._default = Curation(worth_keeping=True, reason="既定")
+        self.calls = []
+
+    def curate(self, record):
+        self.calls.append(record.id)
+        if self._error:
+            raise self._error
+        return self._verdicts.get(record.id, self._default)
+
+
+def test_a_conversation_with_nothing_in_it_is_not_delivered(tmp_path):
+    # The point of curation: not everything the device hears is worth keeping.
+    from meeting_digest.curate import Curation
+
+    config = _config(tmp_path)
+    curator = FakeCurator({"conv_1": Curation(worth_keeping=False, reason="雑談のみ")})
+    sink = RecordingSink("markdown")
+
+    summary = run(config, FakeClient(_items(3)), [sink], DeliveryState.load(config.state_path), curator=curator)
+
+    assert sorted(sink.delivered) == ["conv_0", "conv_2"]
+    assert summary.curated_out == 1
+    assert summary.delivered == 2
+
+
+def test_a_conversation_curated_out_is_not_judged_again_next_run(tmp_path):
+    # Re-judging would pay the model a second time for the same verdict.
+    from meeting_digest.curate import Curation
+
+    config = _config(tmp_path)
+    items = _items(2)
+    verdicts = {"conv_0": Curation(worth_keeping=False, reason="雑談のみ")}
+    run(
+        config,
+        FakeClient(items),
+        [RecordingSink("markdown")],
+        DeliveryState.load(config.state_path),
+        curator=FakeCurator(verdicts),
+    )
+
+    second = FakeCurator(verdicts)
+    run(config, FakeClient(items), [RecordingSink("markdown")], DeliveryState.load(config.state_path), curator=second)
+
+    assert second.calls == []
+
+
+def test_extracted_ideas_reach_the_sink(tmp_path):
+    from meeting_digest.curate import Curation
+
+    config = _config(tmp_path)
+    curator = FakeCurator({"conv_0": Curation(worth_keeping=True, reason="アイデアあり", ideas=["代理店経由が効く"])})
+
+    class CapturingSink(RecordingSink):
+        def __init__(self):
+            super().__init__("markdown")
+            self.records = []
+
+        def deliver(self, record):
+            self.records.append(record)
+            super().deliver(record)
+
+    sink = CapturingSink()
+    run(config, FakeClient(_items(1)), [sink], DeliveryState.load(config.state_path), curator=curator)
+
+    assert sink.records[0].ideas == ["代理店経由が効く"]
+
+
+def test_clipped_conversations_are_counted(tmp_path):
+    from meeting_digest.curate import Curation
+
+    config = _config(tmp_path)
+    curator = FakeCurator({"conv_0": Curation.from_clip("クリップ")})
+
+    summary = run(
+        config,
+        FakeClient(_items(1)),
+        [RecordingSink("markdown")],
+        DeliveryState.load(config.state_path),
+        curator=curator,
+    )
+
+    assert summary.clipped == 1
+    assert summary.delivered == 1
+
+
+def test_a_fatal_curation_failure_stops_curating_but_delivers_everything(tmp_path):
+    # A missing key must not silently drop conversations.
+    from meeting_digest.llm import LLMError
+
+    config = _config(tmp_path)
+    curator = FakeCurator(error=LLMError("API key not valid", fatal=True))
+    sink = RecordingSink("markdown")
+
+    summary = run(config, FakeClient(_items(3)), [sink], DeliveryState.load(config.state_path), curator=curator)
+
+    assert curator.calls == ["conv_0"]  # not once per conversation
+    assert len(sink.delivered) == 3
+    assert summary.curated_out == 0
+    assert len(summary.failures) == 1

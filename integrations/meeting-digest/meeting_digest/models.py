@@ -122,6 +122,12 @@ class MeetingRecord:
     #: A cleaned reading copy of the transcript (see refine.py). Always an
     #: addition — `transcript` stays as the device heard it.
     refined_transcript: Optional[str] = None
+    #: What curation pulled out of the conversation (see curate.py).
+    ideas: List[str] = field(default_factory=list)
+    topics: List[str] = field(default_factory=list)
+    curation_reason: Optional[str] = None
+    #: True when a spoken trigger phrase marked this conversation.
+    clipped: bool = False
 
     @property
     def has_transcript(self) -> bool:
@@ -182,6 +188,14 @@ class MeetingRecord:
         }
         if self.refined_transcript:
             payload["refined_transcript"] = self.refined_transcript
+        if self.ideas:
+            payload["ideas"] = list(self.ideas)
+        if self.topics:
+            payload["topics"] = list(self.topics)
+        if self.curation_reason:
+            payload["curation_reason"] = self.curation_reason
+        if self.clipped:
+            payload["clipped"] = True
         if include_transcript:
             payload["transcript"] = [
                 {
@@ -197,6 +211,15 @@ class MeetingRecord:
 
     def with_refined_transcript(self, cleaned: str) -> "MeetingRecord":
         return replace(self, refined_transcript=cleaned)
+
+    def with_curation(self, curation) -> "MeetingRecord":
+        return replace(
+            self,
+            ideas=list(curation.ideas),
+            topics=list(curation.topics),
+            curation_reason=curation.reason or None,
+            clipped=curation.clipped,
+        )
 
     @staticmethod
     def from_stored(payload: Dict[str, Any]) -> "MeetingRecord":
@@ -242,6 +265,10 @@ class MeetingRecord:
                 for t in _items(payload.get("transcript"))
             ],
             refined_transcript=_optional_text(payload.get("refined_transcript")),
+            ideas=[str(x) for x in (payload.get("ideas") or []) if str(x).strip()],
+            topics=[str(x) for x in (payload.get("topics") or []) if str(x).strip()],
+            curation_reason=_optional_text(payload.get("curation_reason")),
+            clipped=bool(payload.get("clipped", False)),
         )
 
     @staticmethod

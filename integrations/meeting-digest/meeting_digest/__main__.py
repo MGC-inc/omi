@@ -82,33 +82,76 @@ def _run_ingest(config: Config, sinks: List[Sink], args) -> int:
         print("startup error: {}".format(exc), file=sys.stderr)
         return 2
 
+    curator = None
     refiner = None
-    if config.refine_transcript:
-        from .refine import RefinementError, TranscriptRefiner
+    llm_unavailable = None
+    if config.curate or config.refine_transcript:
+        from .curate import Curator
+        from .llm import LLMError, build_llm
+        from .refine import TranscriptRefiner
 
         try:
-            refiner = TranscriptRefiner(api_key=config.anthropic_api_key, model=config.refine_model)
-        except RefinementError as exc:
-            print("startup error: {}".format(exc), file=sys.stderr)
-            return 2
+            llm = build_llm(
+                config.llm_provider,
+                config.llm_model,
+                gemini_api_key=config.gemini_api_key,
+                anthropic_api_key=config.anthropic_api_key,
+            )
+            if config.curate:
+                curator = Curator(llm, config.clip_phrases)
+            if config.refine_transcript:
+                # A separate model for refinement when asked for; the shared one
+                # otherwise. Cleanup and judgement have different price/quality
+                # tradeoffs, so they are allowed to differ.
+                refine_llm = llm
+                if config.refine_model and config.refine_model != config.llm_model:
+                    refine_llm = build_llm(
+                        config.llm_provider,
+                        config.refine_model,
+                        gemini_api_key=config.gemini_api_key,
+                        anthropic_api_key=config.anthropic_api_key,
+                    )
+                refiner = TranscriptRefiner(refine_llm)
+        except LLMError as exc:
+            # Degrade rather than refuse. Curation and refinement are additions
+            # to the pipeline; ingestion is the point of it. Refusing to start
+            # because an optional model is unreachable would mean losing the
+            # conversations entirely — the opposite of what this exists for.
+            print(
+                "warning: LLM features are disabled for this run ({}). "
+                "Conversations are still ingested, uncurated.".format(exc),
+                file=sys.stderr,
+            )
+            logger.error("LLM unavailable, continuing without curation/refinement: %s", exc)
+            llm_unavailable = str(exc)
+            if config.curate:
+                # Spoken triggers never needed the model. Keep them working.
+                from .curate import Curator
+
+                curator = Curator(None, config.clip_phrases)
 
     try:
         with OmiClient(config) as client:
-            summary = run(config, client, sinks, state, refiner=refiner)
+            summary = run(config, client, sinks, state, refiner=refiner, curator=curator)
     except OmiApiError as exc:
         print("api error: {}".format(exc), file=sys.stderr)
         return 1
+
+    if llm_unavailable:
+        summary.failures.append("LLM unavailable: {}".format(llm_unavailable))
 
     if args.json:
         print(json.dumps(summary.as_dict(), ensure_ascii=False, indent=2))
     else:
         print(
-            "listed={} already_delivered={} skipped_short={} fetched={} refined={} "
-            "delivered={} deferred={}".format(
+            "listed={} already_delivered={} skipped_short={} fetched={} "
+            "curated_out={} clipped={} refined={} delivered={} deferred={}".format(
                 summary.listed,
                 summary.already_delivered,
                 summary.skipped_short,
                 summary.fetched,
+                summary.curated_out,
+                summary.clipped,
                 summary.refined,
                 summary.delivered,
                 summary.deferred,

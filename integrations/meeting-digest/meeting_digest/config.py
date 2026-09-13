@@ -107,8 +107,13 @@ class Config:
     include_transcript_in_notion: bool = False
     min_duration_minutes: int = 0
     refine_transcript: bool = False
-    refine_model: str = "claude-opus-5"
+    refine_model: Optional[str] = None
+    curate: bool = False
+    llm_provider: str = "gemini"
+    llm_model: Optional[str] = None
+    clip_phrases: List[str] = field(default_factory=list)
     anthropic_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
     utc_offset_hours: int = 9
     api_server_token: Optional[str] = None
     api_server_host: str = "127.0.0.1"
@@ -154,8 +159,13 @@ class Config:
             include_transcript_in_notion=_flag(env, "MD_NOTION_INCLUDE_TRANSCRIPT", False),
             min_duration_minutes=_non_negative_int(env, "MD_MIN_DURATION_MINUTES", 0),
             refine_transcript=_flag(env, "MD_REFINE_TRANSCRIPT", False),
-            refine_model=(env.get("MD_REFINE_MODEL") or "claude-opus-5").strip(),
+            refine_model=(env.get("MD_REFINE_MODEL") or "").strip() or None,
+            curate=_flag(env, "MD_CURATE", False),
+            llm_provider=(env.get("MD_LLM_PROVIDER") or "gemini").strip().lower(),
+            llm_model=(env.get("MD_LLM_MODEL") or "").strip() or None,
+            clip_phrases=_clip_phrases(env),
             anthropic_api_key=(env.get("ANTHROPIC_API_KEY") or "").strip() or None,
+            gemini_api_key=(env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") or "").strip() or None,
             utc_offset_hours=_offset_int(env, "MD_UTC_OFFSET_HOURS", 9),
             api_server_token=(env.get("MD_API_TOKEN") or "").strip() or None,
             api_server_host=(env.get("MD_API_HOST") or "127.0.0.1").strip(),
@@ -181,8 +191,12 @@ class Config:
             "notion_property_names": dict(self.notion_property_names),
             "min_duration_minutes": self.min_duration_minutes,
             "refine_transcript": self.refine_transcript,
-            "refine_model": self.refine_model if self.refine_transcript else None,
+            "curate": self.curate,
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+            "clip_phrases": list(self.clip_phrases),
             "anthropic_key_configured": self.anthropic_api_key is not None,
+            "gemini_key_configured": self.gemini_api_key is not None,
             "utc_offset_hours": self.utc_offset_hours,
             "api_token_configured": self.api_server_token is not None,
             "api_bind": "{}:{}".format(self.api_server_host, self.api_server_port),
@@ -226,6 +240,16 @@ NOTION_PROPERTY_ENV = {
     "Language": "MD_NOTION_PROP_LANGUAGE",
     "Omi ID": "MD_NOTION_PROP_OMI_ID",
 }
+
+
+def _clip_phrases(env) -> List[str]:
+    """Spoken marks that pin a conversation unconditionally."""
+    from .curate import DEFAULT_CLIP_PHRASES
+
+    raw = env.get("MD_CLIP_PHRASES")
+    if raw is None or not str(raw).strip():
+        return list(DEFAULT_CLIP_PHRASES)
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
 
 
 def _notion_property_names(env) -> Dict[str, str]:

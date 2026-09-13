@@ -13,27 +13,23 @@ copy. Two rules shape the prompt and the tests:
 * The original is never discarded. The cleaned text is an addition to the
   record, so a reader can always go back to what the device actually heard.
 
-Refinement is off by default: it costs an API call per conversation and needs
-an Anthropic key that the rest of the pipeline does not.
+Refinement is off by default: it costs a model call per conversation and needs
+an LLM key that the rest of the pipeline does not. Which provider serves it is
+llm.py's business, not this module's.
 """
 
 import logging
 from typing import List, Optional, Sequence
 
+from .llm import LLMError
 from .models import MeetingRecord, Utterance
 
 logger = logging.getLogger(__name__)
-
-# The skill's default. Cheaper models exist; choosing one is the operator's
-# call, not a default we make for them.
-DEFAULT_MODEL = "claude-opus-5"
 
 # A conversation long enough to exceed this is split, refined in pieces, and
 # rejoined. Well under the context window — the limit that matters here is that
 # one enormous request is slower and harder to retry than a few smaller ones.
 MAX_CHARS_PER_REQUEST = 40000
-
-MAX_OUTPUT_TOKENS = 16000
 
 SYSTEM_PROMPT = """\
 あなたは音声の自動文字起こしを、読める記録に整える編集者です。
@@ -59,55 +55,17 @@ SYSTEM_PROMPT = """\
 """
 
 
-class RefinementError(RuntimeError):
-    """Refinement could not be performed. The raw transcript stays authoritative.
-
-    ``fatal`` marks a failure that every later conversation would hit too —
-    missing credentials, a rejected key, an unknown model. The caller stops
-    trying instead of repeating the same failed call once per conversation.
-    """
-
-    def __init__(self, message: str, fatal: bool = False):
-        super().__init__(message)
-        self.fatal = fatal
-
-
-#: Substrings that identify a configuration failure rather than a transient one.
-#: The SDK raises a bare TypeError when no credential can be resolved, which is
-#: an unhelpful way to learn that ANTHROPIC_API_KEY is unset.
-_FATAL_MARKERS = (
-    "could not resolve authentication",
-    "authentication_error",
-    "invalid x-api-key",
-    "not_found_error",
-    "model:",
-)
+#: Kept as an alias so callers and tests written against refinement keep working;
+#: every failure now originates in llm.py.
+RefinementError = LLMError
 
 
 class TranscriptRefiner:
-    """Wraps one Claude call per conversation (or per chunk of a long one)."""
+    """One model call per conversation (or per chunk of a long one)."""
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        model: str = DEFAULT_MODEL,
-        client=None,
-        max_chars_per_request: int = MAX_CHARS_PER_REQUEST,
-    ):
-        self._model = model
+    def __init__(self, llm, max_chars_per_request: int = MAX_CHARS_PER_REQUEST):
+        self._llm = llm
         self._max_chars = max_chars_per_request
-        if client is not None:
-            self._client = client
-            return
-        try:
-            import anthropic
-        except ImportError:
-            raise RefinementError(
-                "transcript refinement needs the anthropic package: pip install -r requirements-refine.txt"
-            )
-        # A None api_key lets the SDK resolve ANTHROPIC_API_KEY or an `ant auth
-        # login` profile itself, which is how the SDK is meant to be used.
-        self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
     def refine(self, record: MeetingRecord) -> Optional[str]:
         """Return a cleaned reading copy, or None when there is nothing to clean."""
@@ -118,41 +76,8 @@ class TranscriptRefiner:
         chunks = split_for_request(raw, self._max_chars)
         cleaned: List[str] = []
         for index, chunk in enumerate(chunks, start=1):
-            label = "{} ({}/{})".format(record.id or "?", index, len(chunks))
-            cleaned.append(self._refine_chunk(chunk, label))
+            cleaned.append(self._llm.complete_text(SYSTEM_PROMPT, chunk))
         return "\n\n".join(part for part in cleaned if part.strip()) or None
-
-    def _refine_chunk(self, chunk: str, label: str) -> str:
-        try:
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=MAX_OUTPUT_TOKENS,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": chunk}],
-            )
-        except Exception as exc:
-            detail = str(exc)[:200]
-            raise RefinementError(
-                "refining {} failed: {}: {}".format(label, type(exc).__name__, detail),
-                fatal=_is_fatal(exc, detail),
-            )
-
-        if getattr(response, "stop_reason", None) == "refusal":
-            raise RefinementError("refining {} was declined by the model".format(label))
-
-        text = "".join(
-            block.text for block in getattr(response, "content", []) if getattr(block, "type", None) == "text"
-        )
-        if not text.strip():
-            raise RefinementError("refining {} returned no text".format(label))
-        return text.strip()
-
-
-def _is_fatal(exc: Exception, detail: str) -> bool:
-    lowered = detail.lower()
-    if any(marker in lowered for marker in _FATAL_MARKERS):
-        return True
-    return type(exc).__name__ in ("AuthenticationError", "PermissionDeniedError", "NotFoundError")
 
 
 def render_raw_transcript(transcript: Sequence[Utterance]) -> str:

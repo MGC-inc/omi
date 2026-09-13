@@ -37,6 +37,8 @@ class RunSummary:
     listed: int = 0
     already_delivered: int = 0
     fetched: int = 0
+    curated_out: int = 0
+    clipped: int = 0
     refined: int = 0
     delivered: int = 0
     deferred: int = 0
@@ -53,6 +55,8 @@ class RunSummary:
             "listed": self.listed,
             "already_delivered": self.already_delivered,
             "fetched": self.fetched,
+            "curated_out": self.curated_out,
+            "clipped": self.clipped,
             "refined": self.refined,
             "delivered": self.delivered,
             "deferred": self.deferred,
@@ -69,6 +73,7 @@ def run(
     state: DeliveryState,
     now: Optional[datetime] = None,
     refiner=None,
+    curator=None,
 ) -> RunSummary:
     summary = RunSummary()
     sink_names = [sink.name for sink in sinks]
@@ -81,7 +86,7 @@ def run(
     try:
         candidates = _list_window(config, client, start_date, current_time, summary)
         pending = _select_pending(candidates, sink_names, state, summary, config.min_duration_minutes)
-        _deliver_all(config, client, sinks, state, pending, summary, refiner)
+        _deliver_all(config, client, sinks, state, pending, summary, refiner, curator)
     finally:
         state.save()
 
@@ -155,6 +160,7 @@ def _deliver_all(
     pending: List[Dict[str, Any]],
     summary: RunSummary,
     refiner=None,
+    curator=None,
 ) -> None:
     budget = config.max_transcript_fetches
 
@@ -187,6 +193,31 @@ def _deliver_all(
         if not record.id:
             summary.failures.append("fetch {}: response carried no id".format(conversation_id))
             continue
+
+        if curator is not None:
+            from .llm import LLMError
+
+            try:
+                curation = curator.curate(record)
+            except LLMError as exc:
+                # Misconfiguration, not bad luck — every later conversation
+                # would fail identically, so stop curating for this run. Nothing
+                # is dropped on the way out: the conversation still delivers.
+                summary.failures.append(str(exc))
+                logger.error("curation disabled for this run: %s", exc)
+                curator = None
+            else:
+                if not curation.worth_keeping:
+                    summary.curated_out += 1
+                    logger.info("skipping %s: %s", record.id, curation.reason or "nothing worth keeping")
+                    # Marked delivered so a later run does not re-judge and
+                    # re-pay for a conversation already considered.
+                    for sink in sinks:
+                        state.mark_delivered(record.id, sink.name)
+                    continue
+                if curation.clipped:
+                    summary.clipped += 1
+                record = record.with_curation(curation)
 
         if refiner is not None:
             from .refine import RefinementError, refine_record

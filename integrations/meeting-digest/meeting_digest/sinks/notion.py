@@ -272,6 +272,11 @@ def build_blocks(
 ) -> List[Dict[str, Any]]:
     blocks: List[Dict[str, Any]] = []
 
+    if record.ideas:
+        # First, because this is what the conversation was kept for.
+        blocks.append(_heading("拾ったアイデア・気づき"))
+        blocks.extend(_bullet(idea) for idea in record.ideas)
+
     if record.overview:
         blocks.append(_heading("概要"))
         blocks.extend(_paragraphs(record.overview))

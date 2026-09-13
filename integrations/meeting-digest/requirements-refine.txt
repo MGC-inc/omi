@@ -1,4 +1,0 @@
--r requirements.txt
-# Only needed when MD_REFINE_TRANSCRIPT=true. Ingest without refinement does
-# not import this, so a machine that only runs the cron job can skip it.
-anthropic>=0.40
