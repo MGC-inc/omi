@@ -1,0 +1,3 @@
+-r requirements-server.txt
+-r requirements-llm.txt
+pytest>=8.0
