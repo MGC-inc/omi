@@ -20,7 +20,7 @@ from typing import List, Optional, Sequence
 
 from . import __version__
 from .client import OmiApiError, OmiClient
-from .config import Config, ConfigError
+from .config import Config, ConfigError, load_env_file
 from .daily import resolve_day
 from .pipeline import run, run_daily
 from .sinks import build_sinks
@@ -36,6 +36,10 @@ TOP_LEVEL_FLAGS = ("-h", "--help", "--version")
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
     _configure_logging(args.verbose, args.json)
+
+    # A .env beside the working directory is the ordinary place to keep the key;
+    # real environment variables still take precedence over it.
+    load_env_file(args.env_file)
 
     try:
         config = Config.from_env()
@@ -169,6 +173,11 @@ def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
             "--show-config",
             action="store_true",
             help="Print the resolved configuration (the API key is redacted) and exit.",
+        )
+        sub.add_argument(
+            "--env-file",
+            default=None,
+            help="Path to a .env file (default: ./.env, or $MD_ENV_FILE).",
         )
         if name == "daily":
             sub.add_argument(

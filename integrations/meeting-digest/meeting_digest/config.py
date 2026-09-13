@@ -4,9 +4,15 @@ The API key is read from the environment and never written to disk, logs, or
 delivered payloads. ``Config.redacted()`` is what any diagnostic output uses.
 """
 
+import logging
 import os
+import stat
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_ENV_FILE = ".env"
 
 DEFAULT_API_BASE = "https://api.omi.me"
 
@@ -20,6 +26,66 @@ DEFAULT_MAX_TRANSCRIPT_FETCHES = 20
 
 class ConfigError(RuntimeError):
     """Raised when the environment does not carry a usable configuration."""
+
+
+def load_env_file(path: Optional[str] = None, environ: Optional[Dict[str, str]] = None) -> int:
+    """Load ``KEY=VALUE`` lines from a .env file into the environment.
+
+    Returns the number of variables set. Existing environment variables always
+    win, so a one-off ``OMI_API_KEY=... python -m meeting_digest`` still
+    overrides the file, and a missing file is simply a no-op.
+
+    The file holds an API key, so a mode readable by other users on the machine
+    draws a warning — not an error, since refusing to run would be worse than
+    running with a note in the log.
+    """
+    target = path or os.environ.get("MD_ENV_FILE") or DEFAULT_ENV_FILE
+    env = os.environ if environ is None else environ
+
+    if not os.path.isfile(target):
+        return 0
+
+    _warn_if_world_readable(target)
+
+    applied = 0
+    with open(target, "r", encoding="utf-8") as handle:
+        for number, raw in enumerate(handle, start=1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].lstrip()
+            if "=" not in line:
+                logger.warning("%s:%d: ignoring a line without '='", target, number)
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            if key in env:
+                continue
+            env[key] = _unquote(value.strip())
+            applied += 1
+    return applied
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _warn_if_world_readable(path: str) -> None:
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return
+    if mode & (stat.S_IRGRP | stat.S_IROTH):
+        logger.warning(
+            "%s is readable by other users on this machine and holds an API key. " "Restrict it with: chmod 600 %s",
+            path,
+            path,
+        )
 
 
 @dataclass(frozen=True)

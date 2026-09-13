@@ -1,3 +1,6 @@
+# The API key lives here. Never commit it.
+.env
+
 # Delivered notes, delivery state, and the local mirror all hold real
 # conversation content. They must never reach a git remote.
 out/

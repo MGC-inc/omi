@@ -44,12 +44,58 @@ outbound のみで、事故時はキーを失効させれば遮断が完了し�
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt          # API を使う場合は requirements-server.txt
-export OMI_API_KEY="omi_dev_..."
+cp .env.example .env
+chmod 600 .env                           # 自分以外が読めないようにする
+# .env を編集して OMI_API_KEY を設定
 python -m meeting_digest --show-config   # キーは伏せて表示されます
 python -m meeting_digest
 ```
 
 既定では `out/` に会話ごとの Markdown ノートが書き出されます。
+
+## API キーの置き場所
+
+**`.env` ファイルを推奨します。** 実行時のカレントディレクトリにある `.env` を自動で読み込みます。
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+```ini
+# .env
+OMI_API_KEY=omi_dev_xxxxxxxxxxxx
+MD_SINKS=markdown
+MD_LOOKBACK_HOURS=24
+```
+
+- `.env` は `.gitignore` 済みです。コミットされません
+- **実際の環境変数が常に優先されます。** 一時的に上書きしたいときは
+  `OMI_API_KEY=別のキー python -m meeting_digest` で通ります
+- 他のユーザーから読める権限（`chmod 644` など）になっていると警告を出します。
+  起動は止めません — 動かないより、ログに残して動くほうがましだからです
+- 別の場所を使うなら `--env-file /path/to/file` か `MD_ENV_FILE` を指定してください
+
+### 他の選択肢
+
+| 方法 | 向き不向き |
+|---|---|
+| `.env` ファイル（推奨） | プロジェクトごとに分離でき、cron からも使える |
+| `~/.zshrc` に `export` | 全アプリから見える環境変数になる。このツール専用のキーには過剰 |
+| macOS Keychain | 最も安全だが、取り出しに一手間かかる（下記） |
+
+Keychain を使う場合:
+
+```bash
+# 一度だけ登録
+security add-generic-password -a "$USER" -s omi-api-key -w "omi_dev_..."
+
+# 実行時に取り出す
+OMI_API_KEY="$(security find-generic-password -a "$USER" -s omi-api-key -w)" python -m meeting_digest
+```
+
+平文のファイルを一切置きたくない場合はこちらです。ただし cron から使うには
+ログイン中のキーチェーンが解錠されている必要があります。
 
 ## 環境変数
 
@@ -240,7 +286,8 @@ OpenAPI ドキュメントは `http://127.0.0.1:8787/docs` で見られます。
 0 7 * * * cd /opt/meeting-digest && . .venv/bin/activate && python -m meeting_digest daily --json >> log/daily.log 2>&1
 ```
 
-環境変数は cron から見えないため、`.env` を読み込むか cron 行に直接書いてください。
+cron はログインシェルの環境変数を引き継ぎません。上の例が動くのは、`cd` した先の
+`.env` を読み込むためです。`.env` を別の場所に置く場合は `--env-file` を付けてください。
 
 配信済み管理ファイル（`MD_STATE_PATH`）があるため、同じ会話が二重に配信されることはありません。
 
