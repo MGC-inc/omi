@@ -291,10 +291,17 @@ def build_blocks(
         for event in record.events:
             blocks.append(_bullet(_event_line(event, utc_offset_hours)))
 
-    if include_transcript and record.transcript:
-        blocks.append(_heading("文字起こし"))
-        for utterance in record.transcript:
-            blocks.extend(_paragraphs(_transcript_line(utterance)))
+    if include_transcript:
+        # Prefer the cleaned copy when one exists: the raw transcript's
+        # recognition noise is exactly what makes it unfit for a shared page.
+        if record.refined_transcript:
+            blocks.append(_heading("文字起こし（整形済み）"))
+            for paragraph in record.refined_transcript.split("\n\n"):
+                blocks.extend(_paragraphs(paragraph))
+        elif record.transcript:
+            blocks.append(_heading("文字起こし"))
+            for utterance in record.transcript:
+                blocks.extend(_paragraphs(_transcript_line(utterance)))
 
     return blocks
 

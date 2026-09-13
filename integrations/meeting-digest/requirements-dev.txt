@@ -1,2 +1,3 @@
 -r requirements-server.txt
+-r requirements-refine.txt
 pytest>=8.0

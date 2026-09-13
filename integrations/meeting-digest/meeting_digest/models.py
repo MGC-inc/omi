@@ -10,7 +10,7 @@ fall back to empty values, and a malformed timestamp yields ``None`` rather than
 failing the whole run. A single odd conversation must not stop a batch.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -119,6 +119,9 @@ class MeetingRecord:
     action_items: List[ActionItem] = field(default_factory=list)
     events: List[Event] = field(default_factory=list)
     transcript: List[Utterance] = field(default_factory=list)
+    #: A cleaned reading copy of the transcript (see refine.py). Always an
+    #: addition — `transcript` stays as the device heard it.
+    refined_transcript: Optional[str] = None
 
     @property
     def has_transcript(self) -> bool:
@@ -177,6 +180,8 @@ class MeetingRecord:
                 for event in self.events
             ],
         }
+        if self.refined_transcript:
+            payload["refined_transcript"] = self.refined_transcript
         if include_transcript:
             payload["transcript"] = [
                 {
@@ -189,6 +194,9 @@ class MeetingRecord:
                 for u in self.transcript
             ]
         return payload
+
+    def with_refined_transcript(self, cleaned: str) -> "MeetingRecord":
+        return replace(self, refined_transcript=cleaned)
 
     @staticmethod
     def from_stored(payload: Dict[str, Any]) -> "MeetingRecord":
@@ -233,6 +241,7 @@ class MeetingRecord:
                 )
                 for t in _items(payload.get("transcript"))
             ],
+            refined_transcript=_optional_text(payload.get("refined_transcript")),
         )
 
     @staticmethod

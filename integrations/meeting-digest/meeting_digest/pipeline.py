@@ -37,6 +37,7 @@ class RunSummary:
     listed: int = 0
     already_delivered: int = 0
     fetched: int = 0
+    refined: int = 0
     delivered: int = 0
     deferred: int = 0
     skipped_short: int = 0
@@ -52,6 +53,7 @@ class RunSummary:
             "listed": self.listed,
             "already_delivered": self.already_delivered,
             "fetched": self.fetched,
+            "refined": self.refined,
             "delivered": self.delivered,
             "deferred": self.deferred,
             "skipped_short": self.skipped_short,
@@ -66,6 +68,7 @@ def run(
     sinks: Sequence[Sink],
     state: DeliveryState,
     now: Optional[datetime] = None,
+    refiner=None,
 ) -> RunSummary:
     summary = RunSummary()
     sink_names = [sink.name for sink in sinks]
@@ -78,7 +81,7 @@ def run(
     try:
         candidates = _list_window(config, client, start_date, current_time, summary)
         pending = _select_pending(candidates, sink_names, state, summary, config.min_duration_minutes)
-        _deliver_all(config, client, sinks, state, pending, summary)
+        _deliver_all(config, client, sinks, state, pending, summary, refiner)
     finally:
         state.save()
 
@@ -151,6 +154,7 @@ def _deliver_all(
     state: DeliveryState,
     pending: List[Dict[str, Any]],
     summary: RunSummary,
+    refiner=None,
 ) -> None:
     budget = config.max_transcript_fetches
 
@@ -183,6 +187,24 @@ def _deliver_all(
         if not record.id:
             summary.failures.append("fetch {}: response carried no id".format(conversation_id))
             continue
+
+        if refiner is not None:
+            from .refine import RefinementError, refine_record
+
+            # Refinement never blocks delivery: on failure the raw transcript
+            # goes out unchanged rather than the conversation being dropped.
+            try:
+                refined_record = refine_record(record, refiner)
+            except RefinementError as exc:
+                # Misconfiguration, not bad luck — every later conversation
+                # would fail identically, so stop refining for this run.
+                summary.failures.append(str(exc))
+                logger.error("refinement disabled for this run: %s", exc)
+                refiner = None
+            else:
+                if refined_record.refined_transcript:
+                    summary.refined += 1
+                record = refined_record
 
         _deliver_one(sinks, state, record, summary)
 

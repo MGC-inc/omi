@@ -95,8 +95,18 @@ def render_markdown(record: MeetingRecord, include_transcript: bool = True, utc_
             )
         lines.append("")
 
+    if record.refined_transcript:
+        lines.append("## 文字起こし（整形済み）")
+        lines.append("")
+        lines.append(record.refined_transcript)
+        lines.append("")
+
     if include_transcript and record.transcript:
-        lines.append("## 文字起こし")
+        # The raw transcript always stays in the note, even when a cleaned copy
+        # exists: it is what the device actually heard, and the cleanup is a
+        # model's reading of it.
+        heading = "## 文字起こし（原文）" if record.refined_transcript else "## 文字起こし"
+        lines.append(heading)
         lines.append("")
         for utterance in record.transcript:
             lines.append(_transcript_line(utterance))

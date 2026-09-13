@@ -255,3 +255,28 @@ def _timed_item(conversation_id: str, started_at: str, finished_at):
     item = list_item(conversation_id, started_at)
     item["finished_at"] = finished_at
     return item
+
+
+def test_a_fatal_refinement_failure_stops_refining_but_not_delivering(tmp_path):
+    # A missing ANTHROPIC_API_KEY would otherwise fail identically once per
+    # conversation. Delivery must continue with the raw transcript.
+    from meeting_digest.refine import RefinementError
+
+    class FatalRefiner:
+        def __init__(self):
+            self.calls = 0
+
+        def refine(self, record):
+            self.calls += 1
+            raise RefinementError("no credentials", fatal=True)
+
+    config = _config(tmp_path)
+    refiner = FatalRefiner()
+    sink = RecordingSink("markdown")
+
+    summary = run(config, FakeClient(_items(3)), [sink], DeliveryState.load(config.state_path), refiner=refiner)
+
+    assert refiner.calls == 1  # not once per conversation
+    assert len(sink.delivered) == 3  # every conversation still delivered
+    assert summary.refined == 0
+    assert len(summary.failures) == 1

@@ -82,9 +82,19 @@ def _run_ingest(config: Config, sinks: List[Sink], args) -> int:
         print("startup error: {}".format(exc), file=sys.stderr)
         return 2
 
+    refiner = None
+    if config.refine_transcript:
+        from .refine import RefinementError, TranscriptRefiner
+
+        try:
+            refiner = TranscriptRefiner(api_key=config.anthropic_api_key, model=config.refine_model)
+        except RefinementError as exc:
+            print("startup error: {}".format(exc), file=sys.stderr)
+            return 2
+
     try:
         with OmiClient(config) as client:
-            summary = run(config, client, sinks, state)
+            summary = run(config, client, sinks, state, refiner=refiner)
     except OmiApiError as exc:
         print("api error: {}".format(exc), file=sys.stderr)
         return 1
@@ -93,11 +103,13 @@ def _run_ingest(config: Config, sinks: List[Sink], args) -> int:
         print(json.dumps(summary.as_dict(), ensure_ascii=False, indent=2))
     else:
         print(
-            "listed={} already_delivered={} skipped_short={} fetched={} delivered={} deferred={}".format(
+            "listed={} already_delivered={} skipped_short={} fetched={} refined={} "
+            "delivered={} deferred={}".format(
                 summary.listed,
                 summary.already_delivered,
                 summary.skipped_short,
                 summary.fetched,
+                summary.refined,
                 summary.delivered,
                 summary.deferred,
             )

@@ -106,6 +106,9 @@ class Config:
     include_transcript_in_markdown: bool = True
     include_transcript_in_notion: bool = False
     min_duration_minutes: int = 0
+    refine_transcript: bool = False
+    refine_model: str = "claude-opus-5"
+    anthropic_api_key: Optional[str] = None
     utc_offset_hours: int = 9
     api_server_token: Optional[str] = None
     api_server_host: str = "127.0.0.1"
@@ -150,6 +153,9 @@ class Config:
             notion_property_names=_notion_property_names(env),
             include_transcript_in_notion=_flag(env, "MD_NOTION_INCLUDE_TRANSCRIPT", False),
             min_duration_minutes=_non_negative_int(env, "MD_MIN_DURATION_MINUTES", 0),
+            refine_transcript=_flag(env, "MD_REFINE_TRANSCRIPT", False),
+            refine_model=(env.get("MD_REFINE_MODEL") or "claude-opus-5").strip(),
+            anthropic_api_key=(env.get("ANTHROPIC_API_KEY") or "").strip() or None,
             utc_offset_hours=_offset_int(env, "MD_UTC_OFFSET_HOURS", 9),
             api_server_token=(env.get("MD_API_TOKEN") or "").strip() or None,
             api_server_host=(env.get("MD_API_HOST") or "127.0.0.1").strip(),
@@ -174,6 +180,9 @@ class Config:
             "notion_database_id": self.notion_database_id,
             "notion_property_names": dict(self.notion_property_names),
             "min_duration_minutes": self.min_duration_minutes,
+            "refine_transcript": self.refine_transcript,
+            "refine_model": self.refine_model if self.refine_transcript else None,
+            "anthropic_key_configured": self.anthropic_api_key is not None,
             "utc_offset_hours": self.utc_offset_hours,
             "api_token_configured": self.api_server_token is not None,
             "api_bind": "{}:{}".format(self.api_server_host, self.api_server_port),

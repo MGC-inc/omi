@@ -111,6 +111,9 @@ OMI_API_KEY="$(security find-generic-password -a "$USER" -s omi-api-key -w)" pyt
 | `MD_LIST_PAGE_SIZE` | `50` | 一覧取得のページサイズ（1〜100） |
 | `MD_CATEGORIES` | なし | カテゴリ絞り込み（カンマ区切り） |
 | `MD_MIN_DURATION_MINUTES` | `0` | この分数未満の会話を除外。文字起こし取得の前に弾きます |
+| `MD_REFINE_TRANSCRIPT` | `false` | 文字起こしを Claude で整形する（下記） |
+| `MD_REFINE_MODEL` | `claude-opus-5` | 整形に使うモデル |
+| `ANTHROPIC_API_KEY` | なし | 整形を有効にする場合に必要 |
 | `MD_UTC_OFFSET_HOURS` | `9` | 「その日」の区切りと表示時刻の基準。日本なら 9 |
 | `MD_STATE_PATH` | `state/processed.json` | 配信済み管理ファイル |
 | `MD_REQUEST_TIMEOUT_SECONDS` | `30` | HTTP タイムアウト |
@@ -244,6 +247,47 @@ Omi がすでに生成した要約だけを使うため、追加の LLM 呼び�
 
 Markdown は `out/daily/YYYY-MM-DD.md`、Slack と Notion にも配信されます
 （`store` は日次に対応しません。API から都度取得できるためです）。
+
+## 文字起こしの整形（任意）
+
+Omi の文字起こしは自動認識のため、無音区間から拾われた断片や別言語として誤認識された
+挿入、話者不明の発言が混ざります。これを Claude に通して**読める記録**に整えられます。
+
+```ini
+# .env
+MD_REFINE_TRANSCRIPT=true
+MD_REFINE_MODEL=claude-opus-5
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+```bash
+pip install -r requirements-refine.txt
+python -m meeting_digest
+```
+
+Markdown ノートには「文字起こし（整形済み）」と「文字起こし（原文）」の両方が入ります。
+Notion には整形済みの方だけが入ります（`MD_NOTION_INCLUDE_TRANSCRIPT=true` のとき）。
+
+### 設計上の約束
+
+- **原文は消しません。** 整形済みは常に追加であり、置き換えではありません。整形は
+  モデルによる「読み」であって、デバイスが実際に聞いた内容そのものではないためです
+- **内容を足しません。** プロンプトで要約・推測・言い換えを禁じています。モデルが
+  やるのは削除と整理だけです。聞き取れていない箇所は `[不明瞭]` と記されます
+- **失敗しても配信は止まりません。** 整形に失敗した会話は原文のまま配信されます。
+  読みにくくはなりますが、間違ってはいません
+- **設定ミスは1回で止まります。** API キー未設定などは会話ごとに繰り返さず、
+  最初の失敗で整形を止めて残りは原文のまま処理します
+
+### 費用の目安
+
+1時間の会話はおよそ1〜1.5万トークンです。既定の `claude-opus-5`（入力 $5 / 出力 $25 per 1M）で
+**1時間の会話あたり $0.3〜0.5 程度**。1日3時間なら月 $40 前後になります。
+
+安く済ませたい場合は `MD_REFINE_MODEL=claude-haiku-4-5`（入力 $1 / 出力 $5 per 1M）で
+おおむね5分の1になります。整形は「削除と整理」という比較的単純な作業なので、
+まず Haiku で試して品質を見るのは妥当な判断です。既定を Opus にしているのは、
+品質とコストのどちらを取るかは運用側が決めることだからです。
 
 ## 他ツールから叩く API
 
