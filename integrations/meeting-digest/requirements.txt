@@ -1,0 +1,3 @@
+# Runtime dependency. Pinned to a compatible range rather than an exact version
+# so it can share an environment with omi-cli, which depends on the same client.
+httpx>=0.27,<1.0

@@ -1,0 +1,12 @@
+# Delivered notes and delivery state hold real conversation content.
+# They must never reach a git remote.
+out/
+state/
+*.md.tmp
+.note-*
+.state-*
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
