@@ -1,0 +1,6 @@
+-r requirements.txt
+# Needed when MD_CURATE=true or MD_REFINE_TRANSCRIPT=true. Install only the
+# provider you actually use; both are listed because MD_LLM_PROVIDER chooses
+# between them at runtime.
+google-genai>=2.3      # MD_LLM_PROVIDER=gemini (the default)
+anthropic>=0.40        # MD_LLM_PROVIDER=claude
