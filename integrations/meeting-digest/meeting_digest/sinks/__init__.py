@@ -11,10 +11,22 @@ from ..store import ConversationStore
 from .base import Sink, SinkError
 from .markdown import MarkdownSink
 from .notion import NotionSink
+from .notion_sales import NotionSalesSink
+from .notion_tasks import NotionTasksSink
 from .slack import SlackSink
 from .store import StoreSink
 
-__all__ = ["Sink", "SinkError", "MarkdownSink", "NotionSink", "SlackSink", "StoreSink", "build_sinks"]
+__all__ = [
+    "Sink",
+    "SinkError",
+    "MarkdownSink",
+    "NotionSink",
+    "NotionSalesSink",
+    "NotionTasksSink",
+    "SlackSink",
+    "StoreSink",
+    "build_sinks",
+]
 
 
 def build_sinks(config: Config) -> List[Sink]:
@@ -36,6 +48,7 @@ def build_sinks(config: Config) -> List[Sink]:
                     config.slack_webhook_url,
                     timeout_seconds=config.request_timeout_seconds,
                     utc_offset_hours=config.utc_offset_hours,
+                    tasks_board_url=config.slack_tasks_board_url,
                 )
             )
         elif name == "notion":
@@ -53,8 +66,46 @@ def build_sinks(config: Config) -> List[Sink]:
                     property_names=config.notion_property_names,
                 )
             )
+        elif name == "notion_tasks":
+            token = config.notion_tasks_token or config.notion_token
+            if not token:
+                raise ConfigError(
+                    "Sink 'notion_tasks' is enabled but neither MD_NOTION_TASKS_TOKEN nor MD_NOTION_TOKEN is set."
+                )
+            if not config.notion_tasks_database_id:
+                raise ConfigError("Sink 'notion_tasks' is enabled but MD_NOTION_TASKS_DATABASE_ID is not set.")
+            sinks.append(
+                NotionTasksSink(
+                    token,
+                    config.notion_tasks_database_id,
+                    timeout_seconds=config.request_timeout_seconds,
+                    utc_offset_hours=config.utc_offset_hours,
+                    property_names=config.notion_tasks_property_names,
+                )
+            )
+        elif name == "notion_sales":
+            token = config.notion_sales_token or config.notion_token
+            if not token:
+                raise ConfigError(
+                    "Sink 'notion_sales' is enabled but neither MD_NOTION_SALES_TOKEN nor MD_NOTION_TOKEN is set."
+                )
+            if not config.notion_sales_database_id:
+                raise ConfigError("Sink 'notion_sales' is enabled but MD_NOTION_SALES_DATABASE_ID is not set.")
+            sinks.append(
+                NotionSalesSink(
+                    token,
+                    config.notion_sales_database_id,
+                    timeout_seconds=config.request_timeout_seconds,
+                    utc_offset_hours=config.utc_offset_hours,
+                    property_names=config.notion_sales_property_names,
+                )
+            )
         elif name == "store":
             sinks.append(StoreSink(ConversationStore(config.store_path)))
         else:
-            raise ConfigError("Unknown sink {!r}. Known sinks: markdown, slack, notion, store.".format(name))
+            raise ConfigError(
+                "Unknown sink {!r}. Known sinks: markdown, slack, notion, notion_tasks, notion_sales, store.".format(
+                    name
+                )
+            )
     return sinks

@@ -105,7 +105,7 @@ OMI_API_KEY="$(security find-generic-password -a "$USER" -s omi-api-key -w)" pyt
 |---|---|---|
 | `OMI_API_KEY` | （必須） | Developer API キー。`omi_dev_` 以外は起動時に弾きます |
 | `OMI_API_BASE` | `https://api.omi.me` | 自前バックエンドを使う場合のみ変更 |
-| `MD_SINKS` | `markdown` | カンマ区切り。`markdown`, `notion`, `slack`, `store` |
+| `MD_SINKS` | `markdown` | カンマ区切り。`markdown`, `notion`, `notion_tasks`, `notion_sales`, `slack`, `store` |
 | `MD_LOOKBACK_HOURS` | `24` | 何時間前までを対象にするか |
 | `MD_MAX_TRANSCRIPT_FETCHES` | `20` | 1回の実行で文字起こしを取得する上限 |
 | `MD_LIST_PAGE_SIZE` | `50` | 一覧取得のページサイズ（1〜100） |
@@ -133,7 +133,15 @@ OMI_API_KEY="$(security find-generic-password -a "$USER" -s omi-api-key -w)" pyt
 | `MD_NOTION_DATABASE_ID` | 保存先データベース ID。Notion の URL をそのまま貼っても解釈します |
 | `MD_NOTION_INCLUDE_TRANSCRIPT` | Notion ページに文字起こしを含めるか（既定 `false`） |
 | `MD_NOTION_PROP_DATE` 他 | 列名が英語の既定と違う場合の対応付け（下記） |
+| `MD_NOTION_TASKS_TOKEN` | タスクDB用のトークン。未設定なら `MD_NOTION_TOKEN` を使う |
+| `MD_NOTION_TASKS_DATABASE_ID` | タスクの保存先データベース ID（下記「タスク管理との連携」） |
+| `MD_NOTION_TASKS_PROP_STATUS` 他 | タスクDBの列名の対応付け（下記） |
+| `MD_NOTION_SALES_TOKEN` | 営業ナレッジDB用のトークン。未設定なら `MD_NOTION_TOKEN` を使う |
+| `MD_NOTION_SALES_DATABASE_ID` | 営業ナレッジの保存先データベース ID（下記「営業ナレッジの抜き出し」） |
+| `MD_NOTION_SALES_PROP_DATE` 他 | 営業ナレッジDBの列名の対応付け（会話ログと同じ列名セット） |
 | `MD_SLACK_WEBHOOK_URL` | Slack Incoming Webhook の URL |
+| `MD_SLACK_TASKS_BOARD_URL` | Slack の未完了アクション欄に添えるリンク先（下記） |
+| `MD_SALES_CLIP_PHRASES` | 営業ナレッジとして無条件保存する発話トリガー（下記） |
 | `MD_STORE_PATH` | SQLite の保存先（既定 `state/conversations.db`） |
 
 ### API サーバー
@@ -235,6 +243,73 @@ python -m meeting_digest
 Slack には**文字起こしを送りません**。要約と未完了アクションのみです。チャンネルは
 想定より読者が広く保持期間も長いためです。全文が必要な場合は Markdown ノートか API を
 参照してください。
+
+## タスク管理との連携
+
+アクションアイテムを Slack に流すだけでは、完了を追う場所がどこにもありません。
+`notion_tasks` は、未完了のアクションアイテムごとに**専用のタスクデータベース**へ
+1行を作ります。会話ログ（`notion`）とは別のデータベースです。
+
+```ini
+MD_SINKS=markdown,notion,notion_tasks,slack
+MD_NOTION_TASKS_DATABASE_ID=https://www.notion.so/xxxx/1234...?v=...
+MD_NOTION_TASKS_TOKEN=                  # 未設定なら MD_NOTION_TOKEN を使う
+MD_SLACK_TASKS_BOARD_URL=https://www.notion.so/xxxx/1234...   # Slack に添えるリンク
+```
+
+**二重管理を避ける設計です。**
+
+- タスクの内容（担当・期限・文脈）を書く先は、このタスクDBだけです。会話ログの
+  ページにも同じ内容が入りますが、どちらが「正本」かで迷わないよう、タスク側の
+  行には会話IDへの参照（`Omi Conversation ID`）だけを持たせ、Slack にはタスクDBへの
+  **リンクだけ**を送ります（アクション本文をもう一度貼り直しません）
+- **作成したタスクをこのツールが上書きすることはありません。** ステータスを
+  「完了」に変えるなど、人がそのタスクを編集し始めた後に、次回の実行が元に戻す
+  ことはありません。既に完了した（Omi側で `completed` になった）アクションは、
+  単に新しいタスクを作らなくなるだけです
+- 完了済みのアクションアイテムはそもそもタスク化しません
+
+プロパティはタイトル列だけでも動きます。足すと値が入ります（存在しない列は
+自動的に飛ばされます）。
+
+| プロパティ名 | 型 | 入る値 |
+|---|---|---|
+| （タイトル列・名前は任意） | Title | アクションの内容 |
+| `Status` | Select | 既定 `未着手`。以降はこのツールが書き換えません |
+| `Due` | Date | 期限 |
+| `Owner` | Text | 担当者名 |
+| `Context` | Text | Omi が抽出した文脈 |
+| `Source` | Text | 元の会話のタイトル |
+| `Omi Conversation ID` | Text | 元の会話の Omi ID（会話ログとの紐付け） |
+| `Omi Action ID` | Text | このタスク自身の重複防止キー |
+
+## 営業ナレッジの抜き出し
+
+通常のクリップフレーズ（`クリップ` など）は会話全体を無条件で保存しますが、
+商談中の反論・ニーズ・約束のような**営業特有の知見**だけを、会話ログとは別の
+「営業ナレッジ」データベースに送りたい場合は、専用の発話トリガーを使います。
+
+**`MD_CURATE=true` が必須です。** トリガーの判定自体はキュレーション経路
+（`curate.py`）の中で行われるため、キュレーションも整形も無効なままだと
+発話トリガーそのものが評価されず、`notion_sales` には何も届きません。
+
+```ini
+MD_SINKS=markdown,notion,notion_sales
+MD_CURATE=true                          # notion_sales の判定はキュレーション経路を使う
+MD_SALES_CLIP_PHRASES=営業メモ,商談メモ,クリップ商談,sales note
+MD_NOTION_SALES_DATABASE_ID=https://www.notion.so/xxxx/5678...?v=...
+MD_NOTION_SALES_TOKEN=                  # 未設定なら MD_NOTION_TOKEN を使う
+```
+
+会話中に「営業メモ」と言うと、その会話は（通常のクリップと同様に）無条件で保存され、
+**かつ** `notion_sales` 配信先に送られます。トリガーのない会話は `notion_sales` には
+一切書き込まれません（サイレントに無視されるだけで、他の配信先には影響しません）。
+
+- 文字起こしは `notion_sales` には**常に**含まれません（設定で変更できません）。
+  営業ナレッジDBは発言そのものを拾う場所であり、もう一つの文字起こし保管庫には
+  しない、という判断です
+- 日次の振り返り（`daily` コマンド）には対応しません。1日の振り返りは会話を
+  選ばず全件を集計するため、営業ナレッジ限定のDBに書くと目的と矛盾するためです
 
 ## 1日の振り返り
 

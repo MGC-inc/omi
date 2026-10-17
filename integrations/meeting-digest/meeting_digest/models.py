@@ -128,6 +128,9 @@ class MeetingRecord:
     curation_reason: Optional[str] = None
     #: True when a spoken trigger phrase marked this conversation.
     clipped: bool = False
+    #: True when the trigger that clipped it was a sales-specific phrase
+    #: (see curate.DEFAULT_SALES_CLIP_PHRASES). Routes to sinks/notion_sales.py.
+    sales_tagged: bool = False
 
     @property
     def has_transcript(self) -> bool:
@@ -196,6 +199,8 @@ class MeetingRecord:
             payload["curation_reason"] = self.curation_reason
         if self.clipped:
             payload["clipped"] = True
+        if self.sales_tagged:
+            payload["sales_tagged"] = True
         if include_transcript:
             payload["transcript"] = [
                 {
@@ -219,6 +224,7 @@ class MeetingRecord:
             topics=list(curation.topics),
             curation_reason=curation.reason or None,
             clipped=curation.clipped,
+            sales_tagged=getattr(curation, "sales", False),
         )
 
     @staticmethod
@@ -269,6 +275,7 @@ class MeetingRecord:
             topics=[str(x) for x in (payload.get("topics") or []) if str(x).strip()],
             curation_reason=_optional_text(payload.get("curation_reason")),
             clipped=bool(payload.get("clipped", False)),
+            sales_tagged=bool(payload.get("sales_tagged", False)),
         )
 
     @staticmethod

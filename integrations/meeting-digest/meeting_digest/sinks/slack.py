@@ -27,19 +27,21 @@ class SlackSink(Sink):
         timeout_seconds: float = 15.0,
         client: Optional[httpx.Client] = None,
         utc_offset_hours: int = 9,
+        tasks_board_url: Optional[str] = None,
     ):
         if not webhook_url:
             raise ValueError("SlackSink requires a webhook URL")
         self._webhook_url = webhook_url
         self._utc_offset_hours = utc_offset_hours
+        self._tasks_board_url = tasks_board_url
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
 
     def deliver(self, record: MeetingRecord) -> None:
-        self._post(render_slack_text(record, self._utc_offset_hours), record.id)
+        self._post(render_slack_text(record, self._utc_offset_hours, self._tasks_board_url), record.id)
 
     def deliver_daily(self, summary) -> None:
-        self._post(render_daily_slack_text(summary), "the {} review".format(summary.label))
+        self._post(render_daily_slack_text(summary, self._tasks_board_url), "the {} review".format(summary.label))
 
     def _post(self, text: str, what: str) -> None:
         try:
@@ -54,7 +56,7 @@ class SlackSink(Sink):
             self._client.close()
 
 
-def render_slack_text(record: MeetingRecord, utc_offset_hours: int = 9) -> str:
+def render_slack_text(record: MeetingRecord, utc_offset_hours: int = 9, tasks_board_url: Optional[str] = None) -> str:
     lines: List[str] = []
     header = "{} *{}*".format(record.emoji, record.title).strip()
     lines.append(header)
@@ -86,6 +88,10 @@ def render_slack_text(record: MeetingRecord, utc_offset_hours: int = 9) -> str:
             lines.append("• {}{}".format(item.description or "(内容なし)", suffix))
         if len(open_items) > MAX_ACTION_ITEMS:
             lines.append("• ほか{}件".format(len(open_items) - MAX_ACTION_ITEMS))
+        if tasks_board_url:
+            # The tracker is the task's authoritative home; this is a pointer
+            # to it, not a restatement of what is already listed above.
+            lines.append("→ タスク一覧: {}".format(tasks_board_url))
 
     return "\n".join(lines)
 
@@ -97,7 +103,7 @@ def _truncate(text: str, limit: int) -> str:
 MAX_DAILY_LINES = 12
 
 
-def render_daily_slack_text(summary) -> str:
+def render_daily_slack_text(summary, tasks_board_url: Optional[str] = None) -> str:
     """The day's review, short enough to read without opening a thread."""
     offset = summary.utc_offset_hours
     lines: List[str] = ["🗓️ *{} の振り返り*".format(summary.label)]
@@ -121,6 +127,8 @@ def render_daily_slack_text(summary) -> str:
             lines.append("• {}{} — {}".format(item.description or "(内容なし)", suffix, record.title))
         if len(open_actions) > MAX_DAILY_LINES:
             lines.append("• ほか{}件".format(len(open_actions) - MAX_DAILY_LINES))
+        if tasks_board_url:
+            lines.append("→ タスク一覧: {}".format(tasks_board_url))
 
     lines.append("")
     lines.append("*この日の会話*")

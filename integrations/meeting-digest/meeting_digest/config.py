@@ -103,6 +103,19 @@ class Config:
     notion_token: Optional[str] = None
     notion_database_id: Optional[str] = None
     notion_property_names: Dict[str, str] = field(default_factory=dict)
+    #: A dedicated task tracker: one row per open action item, cross-referenced
+    #: to the conversation by id rather than re-stating the meeting there too.
+    notion_tasks_token: Optional[str] = None
+    notion_tasks_database_id: Optional[str] = None
+    notion_tasks_property_names: Dict[str, str] = field(default_factory=dict)
+    #: A dedicated sales-knowledge database: only conversations clipped with a
+    #: sales phrase (see curate.DEFAULT_SALES_CLIP_PHRASES) land here.
+    notion_sales_token: Optional[str] = None
+    notion_sales_database_id: Optional[str] = None
+    notion_sales_property_names: Dict[str, str] = field(default_factory=dict)
+    #: Shown in the Slack digest instead of re-stating every action item's
+    #: text once a dedicated tracker exists for it.
+    slack_tasks_board_url: Optional[str] = None
     include_transcript_in_markdown: bool = True
     include_transcript_in_notion: bool = False
     min_duration_minutes: int = 0
@@ -112,6 +125,7 @@ class Config:
     llm_provider: str = "gemini"
     llm_model: Optional[str] = None
     clip_phrases: List[str] = field(default_factory=list)
+    sales_clip_phrases: List[str] = field(default_factory=list)
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     utc_offset_hours: int = 9
@@ -154,8 +168,19 @@ class Config:
             slack_webhook_url=(env.get("MD_SLACK_WEBHOOK_URL") or "").strip() or None,
             notion_token=(env.get("MD_NOTION_TOKEN") or "").strip() or None,
             notion_database_id=_normalize_notion_id(env.get("MD_NOTION_DATABASE_ID")),
+            notion_tasks_token=(env.get("MD_NOTION_TASKS_TOKEN") or "").strip() or None,
+            notion_tasks_database_id=_normalize_notion_id(
+                env.get("MD_NOTION_TASKS_DATABASE_ID"), "MD_NOTION_TASKS_DATABASE_ID"
+            ),
+            notion_tasks_property_names=_property_names_for(env, NOTION_TASKS_PROPERTY_ENV),
+            notion_sales_token=(env.get("MD_NOTION_SALES_TOKEN") or "").strip() or None,
+            notion_sales_database_id=_normalize_notion_id(
+                env.get("MD_NOTION_SALES_DATABASE_ID"), "MD_NOTION_SALES_DATABASE_ID"
+            ),
+            notion_sales_property_names=_property_names_for(env, NOTION_SALES_PROPERTY_ENV),
+            slack_tasks_board_url=(env.get("MD_SLACK_TASKS_BOARD_URL") or "").strip() or None,
             include_transcript_in_markdown=_flag(env, "MD_MARKDOWN_INCLUDE_TRANSCRIPT", True),
-            notion_property_names=_notion_property_names(env),
+            notion_property_names=_property_names_for(env, NOTION_PROPERTY_ENV),
             include_transcript_in_notion=_flag(env, "MD_NOTION_INCLUDE_TRANSCRIPT", False),
             min_duration_minutes=_non_negative_int(env, "MD_MIN_DURATION_MINUTES", 0),
             refine_transcript=_flag(env, "MD_REFINE_TRANSCRIPT", False),
@@ -164,6 +189,7 @@ class Config:
             llm_provider=(env.get("MD_LLM_PROVIDER") or "gemini").strip().lower(),
             llm_model=(env.get("MD_LLM_MODEL") or "").strip() or None,
             clip_phrases=_clip_phrases(env),
+            sales_clip_phrases=_sales_clip_phrases(env),
             anthropic_api_key=(env.get("ANTHROPIC_API_KEY") or "").strip() or None,
             gemini_api_key=(env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") or "").strip() or None,
             utc_offset_hours=_offset_int(env, "MD_UTC_OFFSET_HOURS", 9),
@@ -189,12 +215,20 @@ class Config:
             "notion_token_configured": self.notion_token is not None,
             "notion_database_id": self.notion_database_id,
             "notion_property_names": dict(self.notion_property_names),
+            "notion_tasks_token_configured": (self.notion_tasks_token or self.notion_token) is not None,
+            "notion_tasks_database_id": self.notion_tasks_database_id,
+            "notion_tasks_property_names": dict(self.notion_tasks_property_names),
+            "notion_sales_token_configured": (self.notion_sales_token or self.notion_token) is not None,
+            "notion_sales_database_id": self.notion_sales_database_id,
+            "notion_sales_property_names": dict(self.notion_sales_property_names),
+            "slack_tasks_board_url": self.slack_tasks_board_url,
             "min_duration_minutes": self.min_duration_minutes,
             "refine_transcript": self.refine_transcript,
             "curate": self.curate,
             "llm_provider": self.llm_provider,
             "llm_model": self.llm_model,
             "clip_phrases": list(self.clip_phrases),
+            "sales_clip_phrases": list(self.sales_clip_phrases),
             "anthropic_key_configured": self.anthropic_api_key is not None,
             "gemini_key_configured": self.gemini_api_key is not None,
             "utc_offset_hours": self.utc_offset_hours,
@@ -204,7 +238,7 @@ class Config:
         }
 
 
-def _normalize_notion_id(value) -> Optional[str]:
+def _normalize_notion_id(value, field_name: str = "MD_NOTION_DATABASE_ID") -> Optional[str]:
     """Accept a raw 32-hex id, a dashed UUID, or a pasted Notion database URL."""
     text = (value or "").strip()
     if not text:
@@ -216,8 +250,8 @@ def _normalize_notion_id(value) -> Optional[str]:
     compact = text.replace("-", "")
     if len(compact) != 32 or not all(c in "0123456789abcdefABCDEF" for c in compact):
         raise ConfigError(
-            "MD_NOTION_DATABASE_ID does not look like a Notion database id "
-            "(expected 32 hex characters, with or without dashes). Got {!r}".format(value)
+            "{} does not look like a Notion database id "
+            "(expected 32 hex characters, with or without dashes). Got {!r}".format(field_name, value)
         )
     return compact
 
@@ -241,6 +275,33 @@ NOTION_PROPERTY_ENV = {
     "Omi ID": "MD_NOTION_PROP_OMI_ID",
 }
 
+#: Same idea, for the dedicated tasks database (sinks/notion_tasks.py). A
+#: task row is a different shape than a conversation page, so it has its own
+#: canonical keys rather than reusing NOTION_PROPERTY_ENV's.
+NOTION_TASKS_PROPERTY_ENV = {
+    "Status": "MD_NOTION_TASKS_PROP_STATUS",
+    "Due": "MD_NOTION_TASKS_PROP_DUE",
+    "Owner": "MD_NOTION_TASKS_PROP_OWNER",
+    "Context": "MD_NOTION_TASKS_PROP_CONTEXT",
+    "Source": "MD_NOTION_TASKS_PROP_SOURCE",
+    "Omi Conversation ID": "MD_NOTION_TASKS_PROP_CONVERSATION_ID",
+    "Omi Action ID": "MD_NOTION_TASKS_PROP_ACTION_ID",
+}
+
+#: Same idea, for the dedicated sales-knowledge database
+#: (sinks/notion_sales.py). It is a NotionSink underneath, so it shares the
+#: conversation-page property shape and can reuse NOTION_PROPERTY_ENV's keys —
+#: only the environment variable names differ, since it is a separate database
+#: with its own columns.
+NOTION_SALES_PROPERTY_ENV = {
+    "Date": "MD_NOTION_SALES_PROP_DATE",
+    "Category": "MD_NOTION_SALES_PROP_CATEGORY",
+    "Duration (min)": "MD_NOTION_SALES_PROP_DURATION",
+    "Open Actions": "MD_NOTION_SALES_PROP_OPEN_ACTIONS",
+    "Language": "MD_NOTION_SALES_PROP_LANGUAGE",
+    "Omi ID": "MD_NOTION_SALES_PROP_OMI_ID",
+}
+
 
 def _clip_phrases(env) -> List[str]:
     """Spoken marks that pin a conversation unconditionally."""
@@ -252,10 +313,20 @@ def _clip_phrases(env) -> List[str]:
     return [p.strip() for p in str(raw).split(",") if p.strip()]
 
 
-def _notion_property_names(env) -> Dict[str, str]:
-    """Resolve each canonical property to the column name in this database."""
+def _sales_clip_phrases(env) -> List[str]:
+    """Spoken marks that pin a conversation as sales knowledge (see curate.py)."""
+    from .curate import DEFAULT_SALES_CLIP_PHRASES
+
+    raw = env.get("MD_SALES_CLIP_PHRASES")
+    if raw is None or not str(raw).strip():
+        return list(DEFAULT_SALES_CLIP_PHRASES)
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
+
+
+def _property_names_for(env, mapping: Dict[str, str]) -> Dict[str, str]:
+    """Resolve each canonical property in ``mapping`` to this database's own column."""
     resolved = {}
-    for canonical, variable in NOTION_PROPERTY_ENV.items():
+    for canonical, variable in mapping.items():
         configured = (env.get(variable) or "").strip()
         resolved[canonical] = configured or canonical
     return resolved
