@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+/*
+ * Fixed light theme by design: white background, black text, blue as the
+ * only accent (#2D6CDF). No dark-mode variant — the brand calls for exactly
+ * one look, not an OS-driven switch.
+ */
+:root {
+  --background: #ffffff;
+  --foreground: #111111;
+  --muted: #6b7280; /* secondary/muted ink — never the data color, see dataviz skill */
+  --border: #e5e7eb; /* hairline gridlines / dividers */
+  --surface: #f7f8fa; /* one step off white, for cards and recessive fills */
+  --accent: #2d6cdf;
+  --accent-contrast: #ffffff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-surface: var(--surface);
+  --color-accent: var(--accent);
+  --color-accent-contrast: var(--accent-contrast);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Comfortable tap targets on mobile; the nav and buttons rely on this. */
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
