@@ -23,11 +23,15 @@ Notion「Omi 会話ログ」┘
   `notion_sales` シンクで作られるもの）は `NOTION_TASKS_DATABASE_ID` /
   `NOTION_SALES_DATABASE_ID` を設定すると、その内容も取り込まれます。今のところ実在しないため、
   未設定でも問題なく動きます
-- **英語などの表示は Gemini で日本語に翻訳されます（補助機能）。** タイトル・要約・セクション・
-  タスクの説明が対象です（担当者名は翻訳しません）。`GEMINI_API_KEY` が未設定、または翻訳の
-  呼び出しが失敗した場合は、元の言語のまま表示されるだけで、ダッシュボード本体は壊れません
-  （`src/lib/translate.ts`）。同じ文章はサーバーがウォームな間はメモリ上にキャッシュされ、
-  2回目以降は Gemini を呼び出しません（API 利用量を抑えるため）
+- **英語などの表示は Vercel AI Gateway で日本語に翻訳されます（補助機能）。** タイトル・要約・
+  セクション・タスクの説明が対象です（担当者名は翻訳しません）。API キーは不要です —
+  Vercel がデプロイに自動で発行する OIDC トークンで認証します（`@vercel/oidc` の
+  `getVercelOidcToken()`、Project Settings で "Secure Backend Access with OIDC
+  Federation" が有効になっている必要があります。下の「Vercel へのデプロイ」参照）。
+  OIDC トークンが取得できない場合や翻訳の呼び出しが失敗した場合は、元の言語のまま表示される
+  だけで、ダッシュボード本体は壊れません（`src/lib/translate.ts`）。同じ文章はサーバーが
+  ウォームな間はメモリ上にキャッシュされ、2回目以降は AI Gateway を呼び出しません
+  （利用量を抑えるため）
 
 ## 画面
 
@@ -76,9 +80,10 @@ npm run dev
 | `SESSION_SECRET` | ✅ | セッションクッキーの署名用。長く・ランダムに |
 | `DASHBOARD_UTC_OFFSET_HOURS` | | 既定 `9`（JST）。「その日」の区切りに使う |
 | `DASHBOARD_LOOKBACK_DAYS` | | 既定 `60`。集計・一覧・検索の対象期間 |
-| `GEMINI_API_KEY` | | Google Gemini の API キー（[Google AI Studio](https://aistudio.google.com)で発行）。タイトル・要約・タスク・アイデアなどの英語表示を日本語に翻訳するのに使う。未設定なら翻訳せず元の言語のまま表示（エラーにはならない） |
-| `TRANSLATE_MODEL` | | 既定 `gemini-3.5-flash-lite` |
-| `GEMINI_API_BASE` | | 既定 `https://generativelanguage.googleapis.com` |
+| `TRANSLATE_MODEL` | | 既定 `google/gemini-2.5-flash-lite`（Vercel AI Gateway のモデルID。安価・高速） |
+| `AI_GATEWAY_BASE_URL` | | 既定 `https://ai-gateway.vercel.sh`。通常は変更不要 |
+
+翻訳機能に API キーは不要です。Vercel 上では「Vercel へのデプロイ」の OIDC 設定だけで動きます。
 
 Notion インテグレーションは、対象のデータベース側で「接続」を許可しないとアクセスできません
 （データベース右上の「…」→「接続」→ 作成したインテグレーションを追加）。
@@ -107,6 +112,12 @@ Python の CLI ツールで、そもそも Vercel にデプロイするもので
 デプロイ後、必要であれば Project Settings → Deployment Protection で
 Password Protection / Vercel Authentication も有効にしてください（任意・二重の保護）。
 
+翻訳機能（Vercel AI Gateway）を使うには、この Vercel プロジェクトで
+**Project Settings → Security → "Secure Backend Access with OIDC Federation" を有効化**
+してください。有効化していないと翻訳は動きませんが、元の言語で表示されるだけでエラーには
+なりません。チーム側で AI Gateway を初めて使う場合は、Vercel ダッシュボードの
+**チーム → AI Gateway** で一度有効化（利用枠・クレジットの確認）が必要な場合があります。
+
 ## 動作確認について
 
 このアプリは1人だけが使う社内ツールのため、自動テストは最小限です。代わりに、実際に
@@ -121,10 +132,11 @@ Password Protection / Vercel Authentication も有効にしてください（任
 - モバイル幅での下部タブバー / デスクトップ幅での上部ナビの切り替え
 - Notion の認証情報が無効な場合でも、ダッシュボード本体（Omi 側のデータ）が壊れずに表示される
   こと（Notion は補助的な役割なので、失敗しても「保存済み」バッジが出ないだけに留まる設計）
-- 英語の会話タイトル・要約・セクション・タスクが Gemini 経由で日本語に翻訳されて表示されること
-  （担当者名は翻訳対象から除外）、`GEMINI_API_KEY` 未設定時は元の言語のまま表示されること
-  （こちらも Notion と同じ、失敗/未設定が本体を壊さない設計）、同一リクエスト内・同一インスタンス
-  内での再読み込みで Gemini 呼び出しが増えないこと（キャッシュの効果をモックサーバーのログで確認）
+- 英語の会話タイトル・要約・セクション・タスクが Vercel AI Gateway 経由で日本語に翻訳されて
+  表示されること（担当者名は翻訳対象から除外）、OIDC トークンが取得できない場合は元の言語のまま
+  表示されること（こちらも Notion と同じ、失敗/未設定が本体を壊さない設計）、同一リクエスト内・
+  同一インスタンス内での再読み込みで Gateway 呼び出しが増えないこと（キャッシュの効果をモック
+  サーバーのログで確認）
 
 ## 既知の制限・今後の改善候補
 
