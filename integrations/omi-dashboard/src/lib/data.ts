@@ -97,7 +97,7 @@ function toView(
 
 /**
  * Every piece of display text in a conversation, gathered into one list so
- * translateBatch can resolve all of them with a single Gemini call per
+ * translateBatch can resolve all of them with a single AI Gateway call per
  * request — never one call per conversation. Owner names are deliberately
  * left out: a person's name is not something to translate.
  */
@@ -172,8 +172,8 @@ export const getConversations = cache(async (): Promise<ConversationView[]> => {
     });
 
   // Translation is an addition on top of the already-built views, same as
-  // the Notion badge above: GEMINI_API_KEY unset, or any failure, leaves
-  // the original-language text in place rather than breaking the page
+  // the Notion badge above: a missing/unusable OIDC token, or any failure,
+  // leaves the original-language text in place rather than breaking the page
   // (translateBatch itself never throws — see lib/translate.ts).
   const translations = await translateBatch(collectTranslatableText(views));
   return applyTranslations(views, translations);
