@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 #: operator actually says — with the English phrases the upstream plugin uses.
 DEFAULT_CLIP_PHRASES = ("クリップ", "これメモ", "メモして", "記録して", "clip this", "note this")
 
+#: A second, independent set of marks for sales-specific knowledge (an
+#: objection, a need, a commitment heard mid-deal). A conversation clipped
+#: with one of these is still clipped — kept unconditionally — but is also
+#: tagged `sales`, which routes it to a dedicated sales-knowledge destination
+#: (see sinks/notion_sales.py) instead of only the general meeting log.
+DEFAULT_SALES_CLIP_PHRASES = ("営業メモ", "商談メモ", "クリップ商談", "sales note")
+
 CURATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -96,13 +103,16 @@ class Curation:
     topics: List[str] = field(default_factory=list)
     #: True when a spoken trigger phrase decided it, with no model involved.
     clipped: bool = False
+    #: True when the trigger that clipped it was a sales-specific phrase.
+    sales: bool = False
 
     @staticmethod
-    def from_clip(phrase: str) -> "Curation":
+    def from_clip(phrase: str, sales: bool = False) -> "Curation":
         return Curation(
             worth_keeping=True,
             reason="発話トリガー「{}」で指定されました".format(phrase),
             clipped=True,
+            sales=sales,
         )
 
 
@@ -115,9 +125,15 @@ class Curator:
     all the ones the speaker deliberately marked.
     """
 
-    def __init__(self, llm=None, clip_phrases: Sequence[str] = DEFAULT_CLIP_PHRASES):
+    def __init__(
+        self,
+        llm=None,
+        clip_phrases: Sequence[str] = DEFAULT_CLIP_PHRASES,
+        sales_clip_phrases: Sequence[str] = DEFAULT_SALES_CLIP_PHRASES,
+    ):
         self._llm = llm
         self._clip_phrases = [p for p in clip_phrases if p.strip()]
+        self._sales_clip_phrases = [p for p in sales_clip_phrases if p.strip()]
 
     def curate(self, record: MeetingRecord) -> Curation:
         """Judge one conversation. Raises LLMError only when the failure is fatal."""
@@ -125,6 +141,10 @@ class Curator:
         if phrase:
             # A deliberate mark outranks any judgement a model would make.
             return Curation.from_clip(phrase)
+
+        sales_phrase = find_clip_phrase(record, self._sales_clip_phrases)
+        if sales_phrase:
+            return Curation.from_clip(sales_phrase, sales=True)
 
         if self._llm is None:
             # Triggers still work; nothing else is filtered out.

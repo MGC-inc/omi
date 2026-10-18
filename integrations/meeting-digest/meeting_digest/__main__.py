@@ -98,7 +98,7 @@ def _run_ingest(config: Config, sinks: List[Sink], args) -> int:
                 anthropic_api_key=config.anthropic_api_key,
             )
             if config.curate:
-                curator = Curator(llm, config.clip_phrases)
+                curator = Curator(llm, config.clip_phrases, config.sales_clip_phrases)
             if config.refine_transcript:
                 # A separate model for refinement when asked for; the shared one
                 # otherwise. Cleanup and judgement have different price/quality
@@ -128,7 +128,7 @@ def _run_ingest(config: Config, sinks: List[Sink], args) -> int:
                 # Spoken triggers never needed the model. Keep them working.
                 from .curate import Curator
 
-                curator = Curator(None, config.clip_phrases)
+                curator = Curator(None, config.clip_phrases, config.sales_clip_phrases)
 
     try:
         with OmiClient(config) as client:

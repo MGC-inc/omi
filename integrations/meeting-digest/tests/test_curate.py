@@ -2,6 +2,7 @@ import pytest
 
 from meeting_digest.curate import (
     DEFAULT_CLIP_PHRASES,
+    DEFAULT_SALES_CLIP_PHRASES,
     Curation,
     Curator,
     find_clip_phrase,
@@ -56,6 +57,59 @@ def test_the_default_phrases_include_japanese_and_english():
 
 def test_clip_matching_is_case_insensitive():
     assert find_clip_phrase(_with_speech("OK, CLIP THIS one"), ["clip this"]) == "clip this"
+
+
+def test_a_sales_clip_phrase_tags_the_curation_as_sales():
+    llm = FakeLLM()
+
+    curation = Curator(llm).curate(_with_speech("予算は来期に回ると言われた。営業メモ。"))
+
+    assert curation.clipped
+    assert curation.sales
+    assert curation.worth_keeping
+    assert llm.calls == []
+
+
+def test_a_general_clip_phrase_is_not_tagged_sales():
+    llm = FakeLLM()
+
+    curation = Curator(llm).curate(_with_speech("これは後で使えそう。クリップ。"))
+
+    assert curation.clipped
+    assert not curation.sales
+
+
+def test_a_general_clip_phrase_takes_precedence_over_a_sales_one():
+    # Both trigger here; the deliberate general mark is checked first and wins.
+    llm = FakeLLM()
+
+    curation = Curator(llm).curate(_with_speech("クリップ。あと、営業メモとしても残して。"))
+
+    assert curation.clipped
+    assert not curation.sales
+
+
+def test_sales_clip_phrases_are_configurable():
+    llm = FakeLLM()
+
+    curation = Curator(llm, sales_clip_phrases=["顧客の声"]).curate(_with_speech("顧客の声として残しておきたい"))
+
+    assert curation.clipped
+    assert curation.sales
+
+
+def test_the_default_sales_phrases_include_japanese():
+    assert "営業メモ" in DEFAULT_SALES_CLIP_PHRASES
+    assert "商談メモ" in DEFAULT_SALES_CLIP_PHRASES
+
+
+def test_without_an_llm_sales_triggers_still_work():
+    # Spoken triggers never needed a model, sales ones included.
+    curation = Curator(None).curate(_with_speech("この条件なら契約できそう。営業メモ。"))
+
+    assert curation.clipped
+    assert curation.sales
+    assert curation.worth_keeping
 
 
 def test_a_conversation_without_a_trigger_goes_to_the_model():
@@ -172,6 +226,14 @@ def test_curation_attaches_to_the_record_and_survives_the_store_round_trip():
     assert restored.topics == ["営業"]
     assert restored.curation_reason == "アイデアあり"
     assert restored.clipped
+    assert not restored.sales_tagged
+
+
+def test_a_sales_curation_marks_the_record_and_survives_the_round_trip():
+    record = _record().with_curation(Curation.from_clip("営業メモ", sales=True))
+
+    assert record.sales_tagged
+    assert MeetingRecord.from_stored(record.to_dict()).sales_tagged
 
 
 # --- degraded operation without an LLM --------------------------------------

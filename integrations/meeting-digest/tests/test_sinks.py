@@ -92,6 +92,29 @@ def test_slack_digest_shows_local_time_not_utc():
     assert "2026-09-10 10:00 UTC+9" in text
 
 
+def test_slack_digest_links_to_the_task_board_when_configured():
+    text = render_slack_text(_record(), tasks_board_url="https://notion.so/tasks")
+
+    assert "→ タスク一覧: https://notion.so/tasks" in text
+
+
+def test_slack_digest_omits_the_task_board_line_by_default():
+    text = render_slack_text(_record())
+
+    assert "タスク一覧" not in text
+
+
+def test_daily_slack_digest_links_to_the_task_board_when_configured():
+    from datetime import date
+
+    from meeting_digest.daily import build_daily_summary
+
+    summary = build_daily_summary([_record()], date(2026, 9, 10), 9)
+    text = render_daily_slack_text(summary, tasks_board_url="https://notion.so/tasks")
+
+    assert "→ タスク一覧: https://notion.so/tasks" in text
+
+
 def test_daily_slack_digest_lists_conversations_in_local_time():
     from datetime import date
 
