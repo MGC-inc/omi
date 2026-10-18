@@ -84,4 +84,11 @@ export const env = {
 
   utcOffsetHours: () => optionalInt("DASHBOARD_UTC_OFFSET_HOURS", 9),
   lookbackDays: () => optionalInt("DASHBOARD_LOOKBACK_DAYS", 60),
+
+  // Optional: translates non-Japanese titles/overviews/action items into
+  // Japanese (see lib/translate.ts). Absent by default — the dashboard shows
+  // whatever language Omi/Notion returned, same as before this existed.
+  geminiApiKey: () => optional("GEMINI_API_KEY"),
+  translateModel: () => optional("TRANSLATE_MODEL") ?? "gemini-3.5-flash-lite",
+  geminiApiBase: () => optional("GEMINI_API_BASE") ?? "https://generativelanguage.googleapis.com",
 };
