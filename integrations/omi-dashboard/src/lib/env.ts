@@ -86,9 +86,10 @@ export const env = {
   lookbackDays: () => optionalInt("DASHBOARD_LOOKBACK_DAYS", 60),
 
   // Optional: translates non-Japanese titles/overviews/action items into
-  // Japanese (see lib/translate.ts). Absent by default — the dashboard shows
-  // whatever language Omi/Notion returned, same as before this existed.
-  geminiApiKey: () => optional("GEMINI_API_KEY"),
-  translateModel: () => optional("TRANSLATE_MODEL") ?? "gemini-3.5-flash-lite",
-  geminiApiBase: () => optional("GEMINI_API_BASE") ?? "https://generativelanguage.googleapis.com",
+  // Japanese via Vercel AI Gateway (see lib/translate.ts). No API key to
+  // configure — authenticated with the OIDC token Vercel issues to this
+  // deployment automatically. Absent/unreachable just means the dashboard
+  // shows whatever language Omi/Notion returned, same as before this existed.
+  translateModel: () => optional("TRANSLATE_MODEL") ?? "google/gemini-2.5-flash-lite",
+  aiGatewayBaseUrl: () => optional("AI_GATEWAY_BASE_URL") ?? "https://ai-gateway.vercel.sh",
 };

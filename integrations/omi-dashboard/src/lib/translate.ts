@@ -1,12 +1,17 @@
+import { getVercelOidcToken } from "@vercel/oidc";
 import { env } from "./env";
 
 /**
- * Translates whatever isn't already Japanese, using Gemini — the same
- * provider as integrations/meeting-digest's llm.py, called directly over
- * its REST API (no SDK dependency needed for one call shape).
+ * Translates whatever isn't already Japanese, using Vercel AI Gateway — one
+ * provider-agnostic endpoint in front of many models, authenticated with the
+ * OIDC token Vercel issues to this deployment automatically. No API key to
+ * create, rotate, or leak: `getVercelOidcToken()` reads it from the request
+ * context at runtime (requires "Secure Backend Access with OIDC Federation"
+ * enabled in the project's Vercel settings).
  *
- * Translation is an enhancement, not a hard dependency: a missing
- * GEMINI_API_KEY, or any failure calling Gemini, falls back to the original
+ * Translation is an enhancement, not a hard dependency: if OIDC isn't
+ * available (e.g. running outside Vercel, or the feature isn't enabled yet)
+ * or the Gateway call fails for any reason, this falls back to the original
  * text rather than breaking the page — the same graceful-degradation stance
  * already used for Notion in notion.ts/data.ts.
  *
@@ -14,7 +19,7 @@ import { env } from "./env";
  * source string, not by conversation) in an in-memory Map that lives for as
  * long as this server instance stays warm. That is "best effort", not
  * durable — there is no persistent store in this project to put it in, and
- * a cache miss only ever costs one extra Gemini call, never a wrong answer.
+ * a cache miss only ever costs one extra Gateway call, never a wrong answer.
  * It does mean the same sentence, even reused across different
  * conversations, is translated once rather than once per occurrence, and
  * repeat views of the same conversation on a warm instance cost nothing.
@@ -26,7 +31,7 @@ const DEFAULT_SYSTEM_PROMPT = `\
 規則:
 1. 意味を正確に保ち、情報を追加したり省略したりしないこと。推測で言葉を補わないこと。
 2. すでに日本語の要素、固有名詞・製品名・コード・数値のみの要素は変更せずそのまま返すこと。
-3. 出力は入力と同じ件数・同じ順序の文字列配列（JSON配列）のみ。説明や前置き、コードフェンスは付けないこと。`;
+3. 指定されたJSONスキーマの"translations"フィールドに、入力と同じ件数・同じ順序の文字列配列として返すこと。`;
 
 const MAX_CACHE_ENTRIES = 4000;
 const MAX_BATCH_CHARS = 20000; // keeps one request well under typical output-token limits
@@ -65,70 +70,84 @@ function remember(key: string, value: string): void {
   cache.set(key, value);
 }
 
-interface GeminiGenerateResponse {
-  candidates?: { content?: { parts?: { text?: string }[] } }[];
+interface GatewayChatResponse {
+  choices?: { message?: { content?: string } }[];
 }
 
-async function callGemini(texts: string[]): Promise<string[]> {
-  const apiKey = env.geminiApiKey();
-  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
+async function callGateway(texts: string[]): Promise<string[]> {
+  let token: string | undefined;
+  try {
+    token = await getVercelOidcToken();
+  } catch (cause) {
+    throw new Error(`Could not obtain a Vercel OIDC token: ${(cause as Error).message}`);
+  }
+  if (!token) throw new Error("No Vercel OIDC token is available");
+
   const model = env.translateModel();
-  const url = `${env.geminiApiBase()}/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const url = `${env.aiGatewayBaseUrl()}/v1/chat/completions`;
 
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
       cache: "no-store",
       signal: AbortSignal.timeout(20000),
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: DEFAULT_SYSTEM_PROMPT }] },
-        contents: [{ parts: [{ text: JSON.stringify(texts) }] }],
-        generationConfig: {
-          responseMimeType: "application/json",
-          responseSchema: { type: "ARRAY", items: { type: "STRING" } },
-          maxOutputTokens: 8192,
+        model,
+        messages: [
+          { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+          { role: "user", content: JSON.stringify(texts) },
+        ],
+        max_tokens: 8192,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "translations",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                translations: { type: "array", items: { type: "string" } },
+              },
+              required: ["translations"],
+              additionalProperties: false,
+            },
+          },
         },
       }),
     });
   } catch (cause) {
-    throw new Error(
-      `Gemini translate request failed: ${(cause as Error).message}`,
-    );
+    throw new Error(`AI Gateway translate request failed: ${(cause as Error).message}`);
   }
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(
-      `Gemini translate returned HTTP ${response.status}: ${body.slice(0, 300)}`,
-    );
+    throw new Error(`AI Gateway translate returned HTTP ${response.status}: ${body.slice(0, 300)}`);
   }
 
-  const payload = (await response.json()) as GeminiGenerateResponse;
-  const raw = payload.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!raw) throw new Error("Gemini translate returned no text");
+  const payload = (await response.json()) as GatewayChatResponse;
+  const raw = payload.choices?.[0]?.message?.content;
+  if (!raw) throw new Error("AI Gateway translate returned no content");
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error(
-      `Gemini translate returned non-JSON text: ${raw.slice(0, 200)}`,
-    );
+    throw new Error(`AI Gateway translate returned non-JSON content: ${raw.slice(0, 200)}`);
   }
-  if (!Array.isArray(parsed) || parsed.length !== texts.length) {
-    const got = Array.isArray(parsed)
-      ? `an array of ${parsed.length}`
-      : typeof parsed;
-    throw new Error(
-      `Gemini translate returned ${got} item(s) for ${texts.length} input(s)`,
-    );
+  const translations = (parsed as { translations?: unknown }).translations;
+  if (!Array.isArray(translations) || translations.length !== texts.length) {
+    const got = Array.isArray(translations) ? `an array of ${translations.length}` : typeof translations;
+    throw new Error(`AI Gateway translate returned ${got} item(s) for ${texts.length} input(s)`);
   }
-  return parsed.map((item) => (typeof item === "string" ? item : String(item)));
+  return translations.map((item) => (typeof item === "string" ? item : String(item)));
 }
 
-/** Splits into chunks small enough for one Gemini call's output budget. */
+/** Splits into chunks small enough for one Gateway call's output budget. */
 function chunk(texts: string[]): string[][] {
   const chunks: string[][] = [];
   let current: string[] = [];
@@ -153,9 +172,7 @@ function chunk(texts: string[]): string[][] {
  * is unavailable/failed for, maps to itself — so a caller can always look
  * any string up and get something sensible back.
  */
-export async function translateBatch(
-  texts: string[],
-): Promise<Map<string, string>> {
+export async function translateBatch(texts: string[]): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   const pending: string[] = [];
   const pendingKeys: string[] = [];
@@ -178,15 +195,10 @@ export async function translateBatch(
 
   if (pending.length === 0) return result;
 
-  if (!env.geminiApiKey()) {
-    for (const text of pending) result.set(text, text);
-    return result;
-  }
-
   let cursor = 0;
   for (const batch of chunk(pending)) {
     try {
-      const translated = await callGemini(batch);
+      const translated = await callGateway(batch);
       for (let i = 0; i < batch.length; i++) {
         const original = batch[i];
         const value = translated[i] ?? original;
