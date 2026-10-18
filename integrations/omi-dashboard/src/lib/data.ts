@@ -14,6 +14,7 @@ import {
   localWeekKey,
   parseTimestamp,
 } from "./time";
+import { translateBatch } from "./translate";
 
 export interface ActionItemView {
   description: string;
@@ -95,6 +96,50 @@ function toView(
 }
 
 /**
+ * Every piece of display text in a conversation, gathered into one list so
+ * translateBatch can resolve all of them with a single Gemini call per
+ * request — never one call per conversation. Owner names are deliberately
+ * left out: a person's name is not something to translate.
+ */
+function collectTranslatableText(views: ConversationView[]): string[] {
+  const texts: string[] = [];
+  for (const view of views) {
+    texts.push(view.title, view.overview);
+    for (const section of view.sections)
+      texts.push(section.heading, section.body);
+    for (const item of view.actionItems) {
+      texts.push(item.description);
+      if (item.context) texts.push(item.context);
+    }
+    for (const event of view.events) texts.push(event.title);
+  }
+  return texts;
+}
+
+function applyTranslations(
+  views: ConversationView[],
+  translations: Map<string, string>,
+): ConversationView[] {
+  const t = (text: string) => translations.get(text) ?? text;
+  return views.map((view) => ({
+    ...view,
+    title: t(view.title),
+    overview: t(view.overview),
+    sections: view.sections.map((s) => ({
+      heading: t(s.heading),
+      body: t(s.body),
+    })),
+    actionItems: view.actionItems.map((item) => ({
+      ...item,
+      description: t(item.description),
+      context: item.context ? t(item.context) : item.context,
+      conversationTitle: t(item.conversationTitle),
+    })),
+    events: view.events.map((e) => ({ ...e, title: t(e.title) })),
+  }));
+}
+
+/**
  * Everything the dashboard shows, for one request. `cache()` (React's
  * per-request memoization) means every page/component that calls this
  * during the same request shares one fetch instead of each re-querying Omi
@@ -118,13 +163,20 @@ export const getConversations = cache(async (): Promise<ConversationView[]> => {
     }),
   ]);
 
-  return raw
+  const views = raw
     .map((item) => toView(item, notionIndex))
     .sort((a, b) => {
       const at = a.occurredAt?.getTime() ?? 0;
       const bt = b.occurredAt?.getTime() ?? 0;
       return bt - at;
     });
+
+  // Translation is an addition on top of the already-built views, same as
+  // the Notion badge above: GEMINI_API_KEY unset, or any failure, leaves
+  // the original-language text in place rather than breaking the page
+  // (translateBatch itself never throws — see lib/translate.ts).
+  const translations = await translateBatch(collectTranslatableText(views));
+  return applyTranslations(views, translations);
 });
 
 export const getConversation = cache(
@@ -278,5 +330,21 @@ export const getNotionExtras = cache(async () => {
       return [];
     }),
   ]);
-  return { tasks, sales };
+
+  const translations = await translateBatch([
+    ...tasks.map((row) => row.title),
+    ...sales.flatMap((row) =>
+      row.overview ? [row.title, row.overview] : [row.title],
+    ),
+  ]);
+  const t = (text: string) => translations.get(text) ?? text;
+
+  return {
+    tasks: tasks.map((row) => ({ ...row, title: t(row.title) })),
+    sales: sales.map((row) => ({
+      ...row,
+      title: t(row.title),
+      overview: row.overview ? t(row.overview) : row.overview,
+    })),
+  };
 });
